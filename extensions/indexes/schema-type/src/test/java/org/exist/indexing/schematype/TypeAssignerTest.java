@@ -580,6 +580,32 @@ public class TypeAssignerTest {
     }
 
     @Test
+    public void foreignNamespaceRootEmitsNothing() throws Exception {
+        assertEquals(Map.of(), runXml("<x:doc xmlns:x='urn:other'><x:a/></x:doc>", schema, checker));
+        assertEquals(Map.of(), runXml("<doc><a b='c'/></doc>", schema, checker));
+    }
+
+    @Test
+    public void abstractRootIsUnassignable() throws Exception {
+        final Map<String, Assignment> doc = runXml("<t:product xmlns:t='" + NS + "' xmlns:xsi='" + XSI
+                + "' xsi:type='t:Swap'><t:productType>x</t:productType></t:product>", schema, checker);
+        assertUnassignable(doc, "/t:product", "abstract element t:product");
+        assertEquals(1, doc.size());
+    }
+
+    @Test
+    public void undeclaredXmlAttributesEmitNothing() throws Exception {
+        final Map<String, Assignment> doc = trade("<t:party id='p' xml:lang='en' xml:space='preserve'/>"
+                + "<t:fee><t:amount xml:lang='en'>5</t:amount></t:fee>");
+        assertStatus(doc, "/t:trade/t:party", ANNOTATED);
+        assertType(doc, "/t:trade/t:party/@id", Type.ID);
+        assertNone(doc, "/t:trade/t:party/@xml:lang");
+        assertNone(doc, "/t:trade/t:party/@xml:space");
+        assertType(doc, "/t:trade/t:fee/t:amount", Type.DECIMAL);
+        assertNone(doc, "/t:trade/t:fee/t:amount/@xml:lang");
+    }
+
+    @Test
     public void positionsCountSameNameSiblings() throws Exception {
         final Map<String, Assignment> doc = trade("<t:party id='a'/><t:party id='b'/><t:partyReference href='b'/>");
         assertType(doc, "/t:trade/t:party[1]/@id", Type.ID);

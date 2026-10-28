@@ -65,7 +65,9 @@ import java.util.function.Function;
  * {@code xs:anyType} elements and {@code xs:untypedAtomic} attributes. Only the root of an unassignable
  * subtree is reported, as {@link Status#UNASSIGNABLE}. A failure of an attribute (not allowed, or an
  * invalid value) makes only that attribute unassignable. The {@code xsi:*} attributes themselves are
- * consumed and get no assignment.</p>
+ * consumed and get no assignment, as do {@code xml:*} attributes the element's type does not declare or admit.
+ * A document whose root element is not in one of the schema's target namespaces is outside the schema and
+ * gets no assignments at all.</p>
  *
  * <p>Not thread safe: use one instance per document.</p>
  */
@@ -336,9 +338,18 @@ public final class TypeAssigner {
         final Frame parent = frame.parent;
         final XSElementDeclaration decl;
         if (parent == null) {
+            if (!schema.targetNamespaces().contains(frame.name.getNamespaceURI())) {
+                // the document is outside the schema: nothing is annotated
+                silent();
+                return;
+            }
             final Optional<XSElementDeclaration> global = schema.globalElement(frame.name);
             if (global.isEmpty()) {
                 unassignable(frame, "no global element declaration for " + frame.name.getStringValue());
+                return;
+            }
+            if (global.get().getAbstract()) {
+                unassignable(frame, "abstract element " + frame.name.getStringValue());
                 return;
             }
             decl = global.get();
@@ -435,7 +446,8 @@ public final class TypeAssigner {
     }
 
     /**
-     * @return the attribute's assignment, or null if it is not annotated (skip or lax attribute wildcard)
+     * @return the attribute's assignment, or null if it is not annotated (skip or lax attribute wildcard, or an
+     *         undeclared {@code xml:*} attribute)
      */
     private @Nullable Slot resolveAttribute(final Frame owner, final PendingAttribute attribute) {
         final String path = owner.path + "/@" + attribute.name().getStringValue();
@@ -454,6 +466,10 @@ public final class TypeAssigner {
                     && allowsNamespace(wildcard, attribute.name().getNamespaceURI())) {
                 return null;
             }
+        }
+        if (XMLConstants.XML_NS_URI.equals(attribute.name().getNamespaceURI())) {
+            // xml:lang, xml:space, xml:base, xml:id not declared by the type: unannotated, not unassignable
+            return null;
         }
         return new Slot(attribute.id(), Node.ATTRIBUTE_NODE, path, Type.ANY_TYPE, false, Status.UNASSIGNABLE,
                 "attribute " + attribute.name().getStringValue() + " not allowed", true);
