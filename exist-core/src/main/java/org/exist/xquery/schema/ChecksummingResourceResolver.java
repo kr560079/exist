@@ -1,0 +1,320 @@
+/*
+ * eXist-db Open Source Native XML Database
+ * Copyright (C) 2001 The eXist-db Authors
+ *
+ * info@exist-db.org
+ * http://www.exist-db.org
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ */
+package org.exist.xquery.schema;
+
+import org.apache.xerces.dom.DOMInputImpl;
+import org.exist.dom.persistent.BinaryDocument;
+import org.exist.dom.persistent.DocumentImpl;
+import org.exist.dom.persistent.LockedDocument;
+import org.exist.security.PermissionDeniedException;
+import org.exist.storage.DBBroker;
+import org.exist.storage.lock.Lock.LockMode;
+import org.exist.storage.serializers.Serializer;
+import org.exist.xmldb.XmldbURI;
+import org.w3c.dom.ls.LSInput;
+import org.w3c.dom.ls.LSResourceResolver;
+
+import javax.annotation.Nullable;
+import javax.xml.transform.OutputKeys;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Reader;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Properties;
+import java.util.TreeMap;
+
+/**
+ * Resolves the documents that make up a schema (the root document plus any includes, imports
+ * and redefines) from the database ({@code xmldb:exist://} URIs) and from the XML catalog, and
+ * remembers the bytes of every document it hands to Xerces so that the caller can compute a
+ * checksum over the complete set of sources.
+ *
+ * <p>Instances are single use and not thread safe: create one per schema load.</p>
+ */
+class ChecksummingResourceResolver implements LSResourceResolver {
+
+    private static final String XMLDB_EXIST_PREFIX = "xmldb:exist://";
+    private static final String XMLDB_PREFIX = "xmldb://";
+
+    /** Unchecked carrier used to get a failure through the Xerces call stack. */
+    static final class ResolutionException extends RuntimeException {
+        private final @Nullable String systemId;
+
+        ResolutionException(final String message, @Nullable final String systemId, @Nullable final Throwable cause) {
+            super(message, cause);
+            this.systemId = systemId;
+        }
+
+        @Nullable String systemId() {
+            return systemId;
+        }
+    }
+
+    private final DBBroker broker;
+    private final boolean allowRemote;
+    private final @Nullable LSResourceResolver catalogResolver;
+    private final Map<String, byte[]> documents = new TreeMap<>();
+    private @Nullable ResolutionException failure;
+
+    ChecksummingResourceResolver(final DBBroker broker, final boolean allowRemote, @Nullable final LSResourceResolver catalogResolver) {
+        this.broker = broker;
+        this.allowRemote = allowRemote;
+        this.catalogResolver = catalogResolver;
+    }
+
+    /** @return the bytes of every resolved document, keyed (and ordered) by system ID */
+    Map<String, byte[]> documents() {
+        return documents;
+    }
+
+    /** @return the first resolution failure, if any occurred */
+    @Nullable ResolutionException failure() {
+        return failure;
+    }
+
+    /**
+     * Resolves the root document of a schema.
+     *
+     * @param href the location of the schema
+     * @return the input to hand to the schema loader
+     * @throws ResolutionException if the document cannot be resolved
+     */
+    LSInput resolveRoot(final String href) {
+        final LSInput input = resolveResource(null, null, null, href, null);
+        if (input == null) {
+            throw fail(new ResolutionException("schema not found: " + href, href, null));
+        }
+        return input;
+    }
+
+    @Override
+    public @Nullable LSInput resolveResource(final String type, @Nullable final String namespaceURI, @Nullable final String publicId,
+            @Nullable final String systemId, @Nullable final String baseURI) {
+        try {
+            return doResolve(type, namespaceURI, publicId, systemId, baseURI);
+        } catch (final ResolutionException e) {
+            throw fail(e);
+        }
+    }
+
+    private ResolutionException fail(final ResolutionException e) {
+        if (failure == null) {
+            failure = e;
+        }
+        return e;
+    }
+
+    private @Nullable LSInput doResolve(@Nullable final String type, @Nullable final String namespaceURI, @Nullable final String publicId,
+            @Nullable final String systemId, @Nullable final String baseURI) {
+        if (systemId == null) {
+            // e.g. an xs:import with no schemaLocation: nothing to load from here
+            return null;
+        }
+
+        // 1) database documents
+        final String dbPath = toDatabasePath(systemId, baseURI);
+        if (dbPath != null) {
+            final String id = XMLDB_EXIST_PREFIX + dbPath;
+            return record(id, publicId, readFromDatabase(dbPath, id));
+        }
+
+        // 2) the XML catalog
+        if (catalogResolver != null) {
+            final LSInput catalogued = catalogResolver.resolveResource(type, namespaceURI, publicId, systemId, baseURI);
+            if (catalogued != null) {
+                final String id = catalogued.getSystemId() != null ? catalogued.getSystemId() : systemId;
+                final String catalogDbPath = toDatabasePath(id, null);
+                if (catalogDbPath != null) {
+                    final String dbId = XMLDB_EXIST_PREFIX + catalogDbPath;
+                    return record(dbId, publicId, readFromDatabase(catalogDbPath, dbId));
+                }
+                checkRemote(id);
+                return record(id, publicId, readAll(catalogued, id));
+            }
+        }
+
+        // 3) anything else, directly by URL
+        final String absolute = absolutize(systemId, baseURI);
+        checkRemote(absolute);
+        try (final InputStream is = URI.create(absolute).toURL().openStream()) {
+            return record(absolute, publicId, is.readAllBytes());
+        } catch (final IOException | IllegalArgumentException e) {
+            throw new ResolutionException("unable to read schema document " + absolute + ": " + e.getMessage(), absolute, e);
+        }
+    }
+
+    private LSInput record(final String id, @Nullable final String publicId, final byte[] bytes) {
+        documents.put(id, bytes);
+        final DOMInputImpl input = new DOMInputImpl(publicId, id, null, new ByteArrayInputStream(bytes), null);
+        return input;
+    }
+
+    private void checkRemote(final String uri) {
+        final String scheme = schemeOf(uri);
+        if (scheme != null && (scheme.equals("http") || scheme.equals("https") || scheme.equals("ftp"))) {
+            if (!allowRemote) {
+                throw new ResolutionException("remote schema access disabled: " + uri, uri, null);
+            }
+        }
+    }
+
+    private static @Nullable String schemeOf(final String uri) {
+        final int colon = uri.indexOf(':');
+        if (colon < 2) {   // none, or a single letter (a Windows drive)
+            return null;
+        }
+        for (int i = 0; i < colon; i++) {
+            final char c = uri.charAt(i);
+            if (!(Character.isLetterOrDigit(c) || c == '+' || c == '-' || c == '.')) {
+                return null;
+            }
+        }
+        return uri.substring(0, colon).toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * @return the absolute database path that {@code systemId} denotes (resolved against
+     *     {@code baseURI} when relative), or null if it does not denote a database document
+     */
+    private static @Nullable String toDatabasePath(final String systemId, @Nullable final String baseURI) {
+        final String direct = stripXmldbScheme(systemId);
+        if (direct != null) {
+            return direct;
+        }
+        if (systemId.startsWith("/") && baseURI == null) {
+            return normalize(systemId);
+        }
+        if (baseURI != null && schemeOf(systemId) == null) {
+            final String basePath = stripXmldbScheme(baseURI);
+            if (basePath != null) {
+                try {
+                    return normalize(new URI(null, null, basePath, null).resolve(new URI(systemId)).getPath());
+                } catch (final URISyntaxException e) {
+                    throw new ResolutionException("invalid schema location: " + systemId, systemId, e);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static @Nullable String stripXmldbScheme(final String uri) {
+        String rest;
+        if (uri.startsWith(XMLDB_EXIST_PREFIX)) {
+            rest = uri.substring(XMLDB_EXIST_PREFIX.length());
+        } else if (uri.startsWith(XMLDB_PREFIX)) {
+            rest = uri.substring(XMLDB_PREFIX.length());
+        } else {
+            return null;
+        }
+        if (!rest.startsWith("/")) {
+            // skip an authority such as localhost
+            final int slash = rest.indexOf('/');
+            rest = slash < 0 ? "/" : rest.substring(slash);
+        }
+        while (rest.startsWith("//")) {
+            rest = rest.substring(1);
+        }
+        return normalize(rest);
+    }
+
+    private static String normalize(final String path) {
+        return URI.create("file:///").resolve(path.replace(" ", "%20")).normalize().getPath().replace("%20", " ");
+    }
+
+    private static String absolutize(final String systemId, @Nullable final String baseURI) {
+        if (schemeOf(systemId) != null || baseURI == null) {
+            return systemId;
+        }
+        try {
+            return new URI(baseURI).resolve(systemId).toString();
+        } catch (final URISyntaxException | IllegalArgumentException e) {
+            return systemId;
+        }
+    }
+
+    private byte[] readFromDatabase(final String path, final String id) {
+        try (final LockedDocument locked = broker.getXMLResource(XmldbURI.create(path), LockMode.READ_LOCK)) {
+            if (locked == null) {
+                throw new ResolutionException("schema document not found: " + id, id, null);
+            }
+            final DocumentImpl doc = locked.getDocument();
+            if (doc instanceof BinaryDocument binary) {
+                try (final InputStream is = broker.getBinaryResource(binary)) {
+                    return is.readAllBytes();
+                }
+            }
+            final Serializer serializer = broker.borrowSerializer();
+            try {
+                final Properties props = new Properties();
+                props.setProperty(OutputKeys.INDENT, "no");
+                props.setProperty(OutputKeys.ENCODING, "UTF-8");
+                props.setProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
+                props.setProperty(org.exist.storage.serializers.EXistOutputKeys.EXPAND_XINCLUDES, "no");
+                props.setProperty(org.exist.storage.serializers.EXistOutputKeys.PROCESS_XSL_PI, "no");
+                props.setProperty(org.exist.storage.serializers.EXistOutputKeys.ADD_EXIST_ID, "none");
+                serializer.setProperties(props);
+                return serializer.serialize(doc).getBytes(StandardCharsets.UTF_8);
+            } finally {
+                broker.returnSerializer(serializer);
+            }
+        } catch (final PermissionDeniedException e) {
+            throw new ResolutionException("permission denied reading schema document " + id, id, e);
+        } catch (final org.xml.sax.SAXException | IOException e) {
+            throw new ResolutionException("unable to read schema document " + id + ": " + e.getMessage(), id, e);
+        }
+    }
+
+    private static byte[] readAll(final LSInput input, final String id) {
+        try {
+            final InputStream bytes = input.getByteStream();
+            if (bytes != null) {
+                try (bytes) {
+                    return bytes.readAllBytes();
+                }
+            }
+            final Reader chars = input.getCharacterStream();
+            if (chars != null) {
+                try (chars) {
+                    final StringBuilder sb = new StringBuilder();
+                    final char[] buf = new char[8192];
+                    int n;
+                    while ((n = chars.read(buf)) != -1) {
+                        sb.append(buf, 0, n);
+                    }
+                    return sb.toString().getBytes(StandardCharsets.UTF_8);
+                }
+            }
+            if (input.getStringData() != null) {
+                return input.getStringData().getBytes(StandardCharsets.UTF_8);
+            }
+            try (final InputStream is = URI.create(id).toURL().openStream()) {
+                return is.readAllBytes();
+            }
+        } catch (final IOException | IllegalArgumentException e) {
+            throw new ResolutionException("unable to read schema document " + id + ": " + e.getMessage(), id, e);
+        }
+    }
+}

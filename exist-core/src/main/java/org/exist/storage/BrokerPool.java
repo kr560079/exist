@@ -72,6 +72,7 @@ import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.PerformanceStats;
 import org.exist.xquery.PerformanceStatsService;
 import org.exist.xquery.XQuery;
+import org.exist.xquery.schema.SchemaRegistry;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -114,6 +115,7 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
     private final static Logger LOG = LogManager.getLogger(BrokerPool.class);
 
     private final BrokerPoolServicesManager servicesManager = new BrokerPoolServicesManager();
+    private SchemaRegistry schemaRegistry;
 
     private StatusReporter statusReporter = null;
 
@@ -481,6 +483,7 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
 
         this.cacheManager = servicesManager.register(new DefaultCacheManager(this));
         this.xQueryPool = servicesManager.register(new XQueryPool());
+        this.schemaRegistry = servicesManager.register(new SchemaRegistry());
         this.processMonitor = servicesManager.register(new ProcessMonitor());
         this.xqueryStats = servicesManager.register(new PerformanceStatsService());
         final XMLReaderObjectFactory xmlReaderObjectFactory = servicesManager.register(new XMLReaderObjectFactory());
@@ -1058,6 +1061,15 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
      */
     public XQueryPool getXQueryPool() {
         return xQueryPool;
+    }
+
+    /**
+     * Get the registry of compiled XML Schemas.
+     *
+     * @return the schema registry
+     */
+    public SchemaRegistry getSchemaRegistry() {
+        return schemaRegistry;
     }
 
     /**

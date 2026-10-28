@@ -40,6 +40,7 @@ import org.exist.xquery.ModuleFactory;
 import org.exist.xquery.ModuleRegistration;
 import org.exist.xquery.PerformanceStats;
 import org.exist.xquery.XQueryWatchDog;
+import org.exist.xquery.schema.SchemaRegistry;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -558,6 +559,10 @@ public class Configuration implements ErrorHandler {
         configureProperty(xquery, XQUERY_BACKWARD_COMPATIBLE_ATTRIBUTE, PROPERTY_XQUERY_BACKWARD_COMPATIBLE);
         configureProperty(xquery, XQUERY_RAISE_ERROR_ON_FAILED_RETRIEVAL_ATTRIBUTE, PROPERTY_XQUERY_RAISE_ERROR_ON_FAILED_RETRIEVAL, Configuration::asBoolean, XQUERY_RAISE_ERROR_ON_FAILED_RETRIEVAL_DEFAULT);
         configureProperty(xquery, PerformanceStats.CONFIG_ATTR_TRACE, PerformanceStats.CONFIG_PROPERTY_TRACE);
+
+        // schema registry
+        configureElement(xquery, "schema-registry", schemaRegistry ->
+                configureProperty(schemaRegistry, "cache-size", SchemaRegistry.PROPERTY_CACHE_SIZE, Configuration::asInteger, SchemaRegistry.DEFAULT_CACHE_SIZE));
 
         // built-in-modules
         final Map<String, Class<?>> classMap = new HashMap<>();

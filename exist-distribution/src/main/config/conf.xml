@@ -58,7 +58,7 @@
         - http://exist-db.org/exist/apps/doc/documentation.xml
 
 -->
-<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.8.0">
+<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.9.0">
 
     <!-- 
         Configures the database backend.
@@ -1049,6 +1049,16 @@
             </module>
 
         </builtin-modules>
+
+        <!--
+            Registry of compiled XML Schemas, used for schema-aware indexing and
+            "import schema". Compiled schemas are cached by the checksum of their
+            sources.
+
+            - cache-size: the maximum number of compiled schemas kept in memory;
+              the least recently used is evicted first.
+        -->
+        <schema-registry cache-size="8"/>
     </xquery>
 
     <!-- 

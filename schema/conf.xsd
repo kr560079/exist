@@ -8,7 +8,7 @@
 
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning" vc:minVersion="1.1"
-           version="2.8.0">
+           version="2.9.0">
 
     <xs:include schemaLocation="schema-version-type.xsd"/>
 
@@ -1298,6 +1298,24 @@
                                             </xs:complexType>
                                         </xs:element>
                                     </xs:sequence>
+                                </xs:complexType>
+                            </xs:element>
+                            <xs:element name="schema-registry" minOccurs="0">
+                                <xs:annotation>
+                                    <xs:documentation>
+                                        Settings for the registry that caches compiled XML Schemas
+                                        (used for schema-aware indexing and "import schema").
+                                    </xs:documentation>
+                                </xs:annotation>
+                                <xs:complexType>
+                                    <xs:attribute name="cache-size" type="xs:positiveInteger" default="8">
+                                        <xs:annotation>
+                                            <xs:documentation>
+                                                The maximum number of compiled schemas kept in memory;
+                                                the least recently used schema is evicted first.
+                                            </xs:documentation>
+                                        </xs:annotation>
+                                    </xs:attribute>
                                 </xs:complexType>
                             </xs:element>
                         </xs:sequence>
