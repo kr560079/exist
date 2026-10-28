@@ -41,6 +41,7 @@
     <modules>
         <module>lucene</module>
         <module>ngram</module>
+        <module>schema-type</module>
         <module>range</module>
         <module>sort</module>
         <module>spatial</module>

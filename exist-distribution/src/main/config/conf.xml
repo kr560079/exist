@@ -58,7 +58,7 @@
         - http://exist-db.org/exist/apps/doc/documentation.xml
 
 -->
-<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.9.0">
+<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.9.1">
 
     <!-- 
         Configures the database backend.
@@ -551,6 +551,7 @@
                 or with custom attributes to override defaults.
             -->
             <module id="ngram-index" enabled="yes" file="ngram.dbx" n="3" class="org.exist.indexing.ngram.NGramIndex"/>
+            <module id="schema-type-index" enabled="yes" file="schema-type.dbx" class="org.exist.indexing.schematype.SchemaTypeIndex"/>
 
             <module id="lucene-index" enabled="yes" buffer="32" class="org.exist.indexing.lucene.LuceneIndex"/>
 
