@@ -119,6 +119,14 @@ public class SchemaRegistryTest {
     }
 
     @Test
+    void collectionAllowRemoteIsIgnoredWhenServerGateIsOff() {
+        final SchemaLoadException e = assertThrows(SchemaLoadException.class,
+                () -> registry.load(broker, BASE + "remote-import.xsd", true));
+        assertTrue(e.getMessage().contains("remote schema access disabled by server configuration"), e.getMessage());
+        assertTrue(e.getMessage().contains("schemas.invalid/elsewhere.xsd"), e.getMessage());
+    }
+
+    @Test
     void remoteImportRejectedByDefault() {
         final SchemaLoadException e = assertThrows(SchemaLoadException.class, () -> load(BASE + "remote-import.xsd"));
         assertTrue(e.getMessage().contains("remote schema access disabled"), e.getMessage());

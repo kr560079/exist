@@ -33,7 +33,18 @@ import org.exist.util.DatabaseConfigurationException;
 import org.exist.util.MimeType;
 import org.exist.util.StringInputSource;
 import org.exist.xmldb.XmldbURI;
+import org.exist.collections.CollectionConfiguration;
+import org.exist.EXistException;
+import org.exist.TestUtils;
+import org.exist.security.Account;
+import org.exist.security.Group;
+import org.exist.security.PermissionFactory;
+import org.exist.security.SecurityManager;
+import org.exist.security.Subject;
+import org.exist.security.internal.aider.GroupAider;
+import org.exist.security.internal.aider.UserAider;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
@@ -70,9 +81,54 @@ public class SchemaTypeConfigTest {
         store("trade-common.xsd");
     }
 
+    @BeforeAll
+    static void createUser() throws Exception {
+        final BrokerPool pool = existEmbeddedServer.getBrokerPool();
+        final SecurityManager sm = pool.getSecurityManager();
+        try (final DBBroker b = pool.get(Optional.of(sm.getSystemSubject()))) {
+            if (sm.getAccount(ALICE) == null) {
+                final Group group = new GroupAider(ALICE);
+                sm.addGroup(b, group);
+                final Account alice = new UserAider(ALICE);
+                alice.setPassword(ALICE);
+                alice.setPrimaryGroup(group);
+                sm.addAccount(alice);
+            }
+        }
+    }
+
     @AfterEach
-    void tearDown() {
+    void tearDown() throws Exception {
+        final BrokerPool pool = existEmbeddedServer.getBrokerPool();
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            for (final String path : new String[] {"/db/system/config/db/test-schema-type", "/db/test-schema-type"}) {
+                final Collection col = broker.getCollection(XmldbURI.create(path));
+                if (col != null) {
+                    broker.removeCollection(txn, col);
+                }
+            }
+            txn.commit();
+        }
         broker.close();
+    }
+
+    private static final String ALICE = "alice-schema-type";
+    private static final XmldbURI CONF_COL = XmldbURI.create("/db/system/config/db/test-schema-type");
+
+    private void storeXconf(final DBBroker as, final String xconf) throws Exception {
+        final BrokerPool pool = existEmbeddedServer.getBrokerPool();
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            final Collection col = as.getOrCreateCollection(txn, CONF_COL);
+            as.storeDocument(txn, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE_URI, new StringInputSource(xconf), MimeType.XML_TYPE, col);
+            txn.commit();
+        }
+    }
+
+    private String currentXconfHref() throws Exception {
+        final Collection col = broker.getCollection(XmldbURI.create("/db/test-schema-type"));
+        final Object spec = col.getConfiguration(broker)
+                .getIndexConfiguration().getCustomIndexSpec(SchemaTypeIndex.ID);
+        return spec == null ? null : ((SchemaTypeConfig) spec).href();
     }
 
     private void store(final String name) throws Exception {
@@ -188,6 +244,68 @@ public class SchemaTypeConfigTest {
                 () -> mgr.testConfiguration(broker, xconf("href='xmldb:exist:///db/test-schema-type/absent.xsd'", null)));
         assertThrows(CollectionConfigurationException.class,
                 () -> mgr.testConfiguration(broker, xconf("href='" + HREF + "'", "<type name='t:Nope'/>")));
+    }
+
+    @Test
+    void storingXconfWithBadSchemaIsRejectedAndOldConfigKept() throws Exception {
+        storeXconf(broker, xconf("href='" + HREF + "'", null));
+        assertEquals(HREF, currentXconfHref());
+
+        final String missing = "xmldb:exist:///db/test-schema-type/absent.xsd";
+        final EXistException e = assertThrows(EXistException.class,
+                () -> storeXconf(broker, xconf("href='" + missing + "'", null)));
+        assertTrue(e.getMessage().contains("absent.xsd"), e.getMessage());
+        assertEquals(HREF, currentXconfHref(), "the rejected store must not change the effective configuration");
+    }
+
+    @Test
+    void storingXconfWithUnknownTypedValueTypeIsRejected() {
+        assertThrows(EXistException.class,
+                () -> storeXconf(broker, xconf("href='" + HREF + "'", "<type name='t:Nope'/>")));
+    }
+
+    @Test
+    void brokenNonSchemaTypeSectionStillStores() throws Exception {
+        // a range index with neither qname nor path is invalid, but that has always been warn-only
+        storeXconf(broker, "<collection xmlns='" + CC + "'><index><create type='xs:string' xmlns:xs='http://www.w3.org/2001/XMLSchema'/></index></collection>");
+        try (final var locked = broker.getXMLResource(CONF_COL.append(CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE_URI),
+                org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+            assertNotNull(locked);
+        }
+    }
+
+    @Test
+    void xconfOwnerWithoutReadAccessToSchemaIsRejected() throws Exception {
+        final BrokerPool pool = existEmbeddedServer.getBrokerPool();
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            final Collection conf = broker.getOrCreateCollection(txn, CONF_COL);
+            PermissionFactory.chmod(broker, conf, Optional.of(0777), Optional.empty());
+            broker.saveCollection(txn, conf);
+            final Collection schemas = broker.getOrCreateCollection(txn, XmldbURI.create("/db/test-schema-type"));
+            PermissionFactory.chmod(broker, schemas, Optional.of(0755), Optional.empty());
+            broker.saveCollection(txn, schemas);
+            PermissionFactory.chmod(broker, txn, XmldbURI.create("/db/test-schema-type/trade.xsd"), Optional.of(0700), Optional.empty());
+            PermissionFactory.chmod(broker, txn, XmldbURI.create("/db/test-schema-type/trade-common.xsd"), Optional.of(0700), Optional.empty());
+            txn.commit();
+        }
+
+        final Subject alice = pool.getSecurityManager().authenticate(ALICE, ALICE);
+        try (final DBBroker aliceBroker = pool.get(Optional.of(alice))) {
+            final EXistException e = assertThrows(EXistException.class,
+                    () -> storeXconf(aliceBroker, xconf("href='" + HREF + "'", null)));
+            assertTrue(e.getMessage().contains("trade.xsd"), e.getMessage());
+        }
+
+        // control: once the schema is readable by others the same store succeeds
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            PermissionFactory.chmod(broker, txn, XmldbURI.create("/db/test-schema-type/trade.xsd"), Optional.of(0744), Optional.empty());
+            PermissionFactory.chmod(broker, txn, XmldbURI.create("/db/test-schema-type/trade-common.xsd"), Optional.of(0744), Optional.empty());
+            txn.commit();
+        }
+        try (final DBBroker aliceBroker = pool.get(Optional.of(alice))) {
+            storeXconf(aliceBroker, xconf("href='" + HREF + "'", null));
+        }
+        assertEquals(HREF, currentXconfHref());
     }
 
     @Test

@@ -75,6 +75,7 @@ class ChecksummingResourceResolver implements LSResourceResolver {
 
     private final DBBroker broker;
     private final boolean allowRemote;
+    private final boolean disabledByServer;
     private final @Nullable LSResourceResolver catalogResolver;
     private final Map<String, byte[]> documents = new TreeMap<>();
     private @Nullable ResolutionException failure;
@@ -82,9 +83,11 @@ class ChecksummingResourceResolver implements LSResourceResolver {
     private final java.util.Set<String> catalogIds = new java.util.HashSet<>();
     private boolean uncheckable;
 
-    ChecksummingResourceResolver(final DBBroker broker, final boolean allowRemote, @Nullable final LSResourceResolver catalogResolver) {
+    ChecksummingResourceResolver(final DBBroker broker, final boolean allowRemote, final boolean disabledByServer,
+            @Nullable final LSResourceResolver catalogResolver) {
         this.broker = broker;
         this.allowRemote = allowRemote;
+        this.disabledByServer = disabledByServer;
         this.catalogResolver = catalogResolver;
     }
 
@@ -214,7 +217,9 @@ class ChecksummingResourceResolver implements LSResourceResolver {
         final String scheme = schemeOf(uri);
         if (scheme != null && (scheme.equals("http") || scheme.equals("https") || scheme.equals("ftp"))) {
             if (!allowRemote) {
-                throw new ResolutionException("remote schema access disabled: " + uri, uri, null);
+                throw new ResolutionException(disabledByServer
+                        ? "remote schema access disabled by server configuration: " + uri
+                        : "remote schema access disabled: " + uri, uri, null);
             }
         }
     }

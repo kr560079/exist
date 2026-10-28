@@ -59,6 +59,8 @@ public class SchemaRegistry implements BrokerPoolService {
     /** Configuration property holding the maximum number of cached compiled schemas. */
     public static final String PROPERTY_CACHE_SIZE = "xquery.schema-registry.cache-size";
     public static final int DEFAULT_CACHE_SIZE = 8;
+    /** Configuration property: server-wide gate that must be on before any collection may load remote schema documents. */
+    public static final String PROPERTY_ALLOW_REMOTE = "xquery.schema-registry.allow-remote";
 
     private static final String FEATURE_DISALLOW_DOCTYPE = "http://apache.org/xml/features/disallow-doctype-decl";
     private static final String FEATURE_EXTERNAL_GENERAL_ENTITIES = "http://xml.org/sax/features/external-general-entities";
@@ -67,6 +69,8 @@ public class SchemaRegistry implements BrokerPoolService {
     private final Object lock = new Object();
     private int cacheSize;
     private @Nullable LSResourceResolver catalogResolver;
+    // guarded by lock; the server-level gate for remote schema access
+    private boolean remoteGate;
     // guarded by lock; access-ordered so that eldest = least recently used
     private LinkedHashMap<SchemaKey, CompiledSchema> cache;
     // guarded by lock; remembers what a (location, allowRemote) resolved to, so unchanged schemas are not re-parsed
@@ -130,6 +134,7 @@ public class SchemaRegistry implements BrokerPoolService {
             this.cacheSize = Math.max(1, configuration.getInteger(PROPERTY_CACHE_SIZE, DEFAULT_CACHE_SIZE));
             this.memo = newMemo();
             this.cache = newCache();
+            this.remoteGate = Boolean.TRUE.equals(configuration.getProperty(PROPERTY_ALLOW_REMOTE));
         }
         final Object resolver = configuration.getProperty(XMLReaderObjectFactory.CATALOG_RESOLVER);
         this.catalogResolver = resolver instanceof LSResourceResolver ls ? ls : null;
@@ -140,12 +145,18 @@ public class SchemaRegistry implements BrokerPoolService {
      *
      * @param broker the broker used to read schema documents from the database
      * @param href the location of the schema, e.g. {@code xmldb:exist:///db/schemas/trade.xsd}
-     * @param allowRemote whether {@code http}, {@code https} and {@code ftp} locations may be fetched
+     * @param allowRemote whether the caller asks for {@code http}, {@code https} and {@code ftp} locations to be fetched;
+     *     honoured only if the server-level {@code allow-remote} gate is on
      * @return the compiled schema; the cached instance if the same sources were loaded before
      * @throws SchemaLoadException if the schema cannot be read, is not valid or uses a forbidden construct
      */
     public CompiledSchema load(final DBBroker broker, final String href, final boolean allowRemote) throws SchemaLoadException {
-        final MemoKey memoKey = new MemoKey(href, allowRemote);
+        final boolean gate;
+        synchronized (lock) {
+            gate = remoteGate;
+        }
+        final boolean effectiveAllowRemote = allowRemote && gate;
+        final MemoKey memoKey = new MemoKey(href, effectiveAllowRemote);
         final MemoEntry memoEntry;
         synchronized (lock) {
             memoEntry = memo.get(memoKey);
@@ -159,7 +170,7 @@ public class SchemaRegistry implements BrokerPoolService {
             }
         }
         parseCount.incrementAndGet();
-        final ChecksummingResourceResolver resolver = new ChecksummingResourceResolver(broker, allowRemote, catalogResolver);
+        final ChecksummingResourceResolver resolver = new ChecksummingResourceResolver(broker, effectiveAllowRemote, allowRemote && !gate, catalogResolver);
         final LocatingErrorHandler errors = new LocatingErrorHandler();
 
         XSModel model = null;

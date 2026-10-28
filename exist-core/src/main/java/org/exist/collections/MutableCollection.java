@@ -1433,6 +1433,8 @@ public class MutableCollection implements Collection {
             final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
             if(manager != null) {
                 try {
+                    // reject the store, before the cached configuration is touched, if a schema-type section is unusable
+                    CollectionConfiguration.checkSchemaTypeSections(broker, document);
                     manager.invalidate(getURI(), broker.getBrokerPool());
                     manager.loadConfiguration(broker, this);
                 } catch(final PermissionDeniedException | LockException pde) {

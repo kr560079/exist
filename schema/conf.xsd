@@ -8,7 +8,7 @@
 
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
            xmlns:vc="http://www.w3.org/2007/XMLSchema-versioning" vc:minVersion="1.1"
-           version="2.9.1">
+           version="2.10.0">
 
     <xs:include schemaLocation="schema-version-type.xsd"/>
 
@@ -1313,6 +1313,16 @@
                                             <xs:documentation>
                                                 The maximum number of compiled schemas kept in memory;
                                                 the least recently used schema is evicted first.
+                                            </xs:documentation>
+                                        </xs:annotation>
+                                    </xs:attribute>
+                                    <xs:attribute name="allow-remote" type="xs:boolean" default="false">
+                                        <xs:annotation>
+                                            <xs:documentation>
+                                                Server-level gate for fetching schema includes/imports over
+                                                the network. A collection's allow-remote="true" only takes
+                                                effect when this is also true; leaving it false prevents
+                                                collection owners from making the server fetch arbitrary URLs.
                                             </xs:documentation>
                                         </xs:annotation>
                                     </xs:attribute>

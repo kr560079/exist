@@ -561,8 +561,10 @@ public class Configuration implements ErrorHandler {
         configureProperty(xquery, PerformanceStats.CONFIG_ATTR_TRACE, PerformanceStats.CONFIG_PROPERTY_TRACE);
 
         // schema registry
-        configureElement(xquery, "schema-registry", schemaRegistry ->
-                configureProperty(schemaRegistry, "cache-size", SchemaRegistry.PROPERTY_CACHE_SIZE, Configuration::asInteger, SchemaRegistry.DEFAULT_CACHE_SIZE));
+        configureElement(xquery, "schema-registry", schemaRegistry -> {
+            configureProperty(schemaRegistry, "cache-size", SchemaRegistry.PROPERTY_CACHE_SIZE, Configuration::asInteger, SchemaRegistry.DEFAULT_CACHE_SIZE);
+            configureProperty(schemaRegistry, "allow-remote", SchemaRegistry.PROPERTY_ALLOW_REMOTE, Configuration::asBoolean, FALSE);
+        });
 
         // built-in-modules
         final Map<String, Class<?>> classMap = new HashMap<>();

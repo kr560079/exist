@@ -179,7 +179,7 @@ public class IndexSpec {
      * @param elem
      * @return The namespaces map.
      */
-    private Map<String, String> getNamespaceMap(Element elem) {
+    public static Map<String, String> getNamespaceMap(Element elem) {
         final Node parent = elem.getParentNode();
         if (parent != null)
             {elem = (Element) parent;}
@@ -189,7 +189,7 @@ public class IndexSpec {
         return map;
     }
 
-    private void getNamespaceMap(Element elem, Map<String, String> map) {
+    private static void getNamespaceMap(Element elem, Map<String, String> map) {
         final NamedNodeMap attrs = elem.getAttributes();
         for(int i = 0; i < attrs.getLength(); i++) {
             final Attr attr = (Attr) attrs.item(i);

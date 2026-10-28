@@ -58,7 +58,7 @@
         - http://exist-db.org/exist/apps/doc/documentation.xml
 
 -->
-<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.9.1">
+<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.10.0">
 
     <!-- 
         Configures the database backend.
@@ -1058,8 +1058,11 @@
 
             - cache-size: the maximum number of compiled schemas kept in memory;
               the least recently used is evicted first.
+            - allow-remote: server-wide gate for fetching schema includes/imports over
+              http(s). A collection's allow-remote="true" is ignored unless this is "true".
+              Leave "false" unless collection owners are trusted not to probe internal URLs.
         -->
-        <schema-registry cache-size="8"/>
+        <schema-registry cache-size="8" allow-remote="false"/>
     </xquery>
 
     <!-- 

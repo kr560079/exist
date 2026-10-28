@@ -21,6 +21,7 @@
  */
 package org.exist.collections;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +36,13 @@ import org.exist.collections.triggers.Trigger;
 import org.exist.collections.triggers.TriggerException;
 import org.exist.collections.triggers.TriggerProxy;
 import org.exist.config.annotation.ConfigurationClass;
+import org.exist.dom.persistent.DocumentImpl;
+import org.exist.indexing.IndexWorker;
+import org.exist.security.Account;
+import org.exist.security.AbstractAccount;
+import org.exist.security.Subject;
+import org.exist.security.internal.SubjectAccreditedImpl;
+import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.storage.BrokerPool;
 import org.exist.storage.DBBroker;
 import org.exist.storage.IndexSpec;
@@ -72,6 +80,7 @@ public class CollectionConfiguration {
      * First level element in a collection configuration document
      */
     private static final String INDEX_ELEMENT = "index";
+    private static final String SCHEMA_TYPE_ELEMENT = "schema-type";
     private static final String GROUP_ELEMENT = "default-group";
     private static final String RESOURCE_ATTR = "resource";
     private static final String COLLECTION_ATTR = "collection";
@@ -148,6 +157,12 @@ public class CollectionConfiguration {
                     }
                     case INDEX_ELEMENT -> {
                         final Element elem = (Element) node;
+                        // a schema-type section reads database documents: do that as the owner of the
+                        // configuration document, not as whoever happens to trigger the (re)load
+                        final Subject asOwner = hasSchemaType(elem) ? ownerSubject(broker, doc) : null;
+                        if (asOwner != null) {
+                            broker.pushSubject(asOwner);
+                        }
                         try {
                             if (indexSpec == null) {
                                 indexSpec = new IndexSpec(broker, elem);
@@ -159,6 +174,10 @@ public class CollectionConfiguration {
                                 throw new CollectionConfigurationException(e.getMessage(), e);
                             } else {
                                 LOG.warn(e.getMessage(), e);
+                            }
+                        } finally {
+                            if (asOwner != null) {
+                                broker.popSubject();
                             }
                         }
 
@@ -184,6 +203,100 @@ public class CollectionConfiguration {
             } else if (node.getNodeType() == Node.ELEMENT_NODE) {
                 throwOrLog("Ignored node '" + node.getLocalName() + "' in namespace '" +
                         node.getNamespaceURI() + "' in configuration document", checkOnly);
+            }
+        }
+    }
+
+    private static boolean hasSchemaType(final Element index) {
+        return childElements(index, SCHEMA_TYPE_ELEMENT).stream().findAny().isPresent();
+    }
+
+    private static List<Element> childElements(final Element parent, final String... localNames) {
+        final List<Element> result = new ArrayList<>();
+        final NodeList kids = parent.getChildNodes();
+        for (int i = 0; i < kids.getLength(); i++) {
+            final Node kid = kids.item(i);
+            if (kid.getNodeType() == Node.ELEMENT_NODE && NAMESPACE.equals(kid.getNamespaceURI())) {
+                for (final String name : localNames) {
+                    if (name.equals(kid.getLocalName())) {
+                        result.add((Element) kid);
+                        break;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @return a subject for the owner of the configuration document, or null if the document is not a
+     *     stored document (or its owner cannot be determined) and the ambient subject should be used
+     */
+    private static @Nullable Subject ownerSubject(final DBBroker broker, final Document doc) {
+        if (!(doc instanceof DocumentImpl stored)) {
+            return null;
+        }
+        final org.exist.security.SecurityManager sm = broker.getBrokerPool().getSecurityManager();
+        final Account owner = stored.getPermissions().getOwner();
+        if (owner == null) {
+            return null;
+        }
+        if (owner.getName().equals(sm.getSystemSubject().getName())) {
+            return sm.getSystemSubject();
+        }
+        final Account account = sm.getAccount(owner.getName());
+        if (account instanceof AbstractAccount abstractAccount) {
+            return new SubjectAccreditedImpl(abstractAccount, sm);
+        }
+        return null;
+    }
+
+    /**
+     * Called when a collection configuration document is stored: configures only its
+     * {@code schema-type} sections (as the document's owner) so that an unusable schema rejects the
+     * store. Every other index section keeps its warn-only behaviour.
+     *
+     * @param broker the broker
+     * @param doc the stored configuration document
+     * @throws CollectionConfigurationException if a schema-type section is invalid
+     */
+    public static void checkSchemaTypeSections(final DBBroker broker, final Document doc) throws CollectionConfigurationException {
+        final Element root = doc.getDocumentElement();
+        if (root == null || !NAMESPACE.equals(root.getNamespaceURI())) {
+            return;
+        }
+        final IndexWorker worker = broker.getIndexController().getWorkerByIndexId(TypeAnnotationProvider.INDEX_ID);
+        if (worker == null) {
+            return;  // the schema-type index module is not enabled
+        }
+        for (final Element index : childElements(root, INDEX_ELEMENT)) {
+            final List<Element> sections = childElements(index, SCHEMA_TYPE_ELEMENT, "typed-values");
+            if (sections.stream().noneMatch(e -> SCHEMA_TYPE_ELEMENT.equals(e.getLocalName()))) {
+                continue;
+            }
+            final NodeList nodes = new NodeList() {
+                @Override
+                public Node item(final int i) {
+                    return sections.get(i);
+                }
+
+                @Override
+                public int getLength() {
+                    return sections.size();
+                }
+            };
+            final Subject asOwner = ownerSubject(broker, doc);
+            if (asOwner != null) {
+                broker.pushSubject(asOwner);
+            }
+            try {
+                worker.configure(broker.getIndexController(), nodes, IndexSpec.getNamespaceMap(index));
+            } catch (final DatabaseConfigurationException e) {
+                throw new CollectionConfigurationException(e.getMessage(), e);
+            } finally {
+                if (asOwner != null) {
+                    broker.popSubject();
+                }
             }
         }
     }
