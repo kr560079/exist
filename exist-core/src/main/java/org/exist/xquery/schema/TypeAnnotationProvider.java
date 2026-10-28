@@ -1,0 +1,85 @@
+/*
+ * eXist-db Open Source Native XML Database
+ * Copyright (C) 2001 The eXist-db Authors
+ *
+ * info@exist-db.org
+ * http://www.exist-db.org
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ */
+package org.exist.xquery.schema;
+
+import org.exist.dom.persistent.DocumentImpl;
+import org.exist.dom.persistent.DocumentSet;
+import org.exist.dom.persistent.NodeProxy;
+import org.exist.dom.persistent.NodeSet;
+import org.exist.indexing.IndexWorker;
+import org.exist.storage.DBBroker;
+import org.exist.xquery.XPathException;
+
+import javax.annotation.Nullable;
+
+/**
+ * Supplies the type annotations of stored nodes. Implemented by the index worker of the schema type index.
+ */
+public interface TypeAnnotationProvider {
+
+    /** The id of the index whose worker provides the annotations. */
+    String INDEX_ID = "org.exist.indexing.schematype.SchemaTypeIndex";
+
+    /**
+     * Get the type annotation of a stored node.
+     *
+     * @param node the node
+     * @return null if the collection of the node has no schema; {@link TypeAnnotation#ANY_TYPE} (elements)
+     *         or {@link TypeAnnotation#UNTYPED_ATOMIC} (attributes) if it has a schema but the node is not
+     *         annotated; otherwise the stored annotation
+     * @throws XPathException {@code EXSA0002} if the schema is unavailable, {@code EXSA0003} if the index
+     *         is stale for the document of the node
+     */
+    @Nullable TypeAnnotation annotationOf(NodeProxy node) throws XPathException;
+
+    /**
+     * Find the nodes annotated with a type.
+     *
+     * @param docs           the documents to search
+     * @param typeCode       the {@link org.exist.xquery.value.Type} code of the type
+     * @param includeDerived true to also find nodes annotated with types derived from {@code typeCode}
+     * @param nodeKind       the {@link org.exist.xquery.value.Type} code of the node kind (element or attribute)
+     * @return the matching nodes
+     * @throws XPathException {@code EXSA0002} or {@code EXSA0003}
+     */
+    NodeSet nodesOfType(DocumentSet docs, int typeCode, boolean includeDerived, int nodeKind) throws XPathException;
+
+    /**
+     * Get the schema the document was annotated with.
+     *
+     * @param doc the document
+     * @return the key of the schema, or null if the collection of the document has no schema
+     * @throws XPathException {@code EXSA0002} if the schema is unavailable
+     */
+    @Nullable SchemaKey schemaOf(DocumentImpl doc) throws XPathException;
+
+    /**
+     * Get the provider of a broker.
+     *
+     * @param broker the broker
+     * @return the provider, or null if the schema type index is not configured
+     */
+    static @Nullable TypeAnnotationProvider of(final DBBroker broker) {
+        final IndexWorker worker = broker.getIndexController().getWorkerByIndexId(INDEX_ID);
+        return worker instanceof TypeAnnotationProvider provider ? provider : null;
+    }
+}

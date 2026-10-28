@@ -127,7 +127,7 @@ public class FunDistinctValues extends CollatingFunction {
             value = item.atomize();
             if (!set.contains(value)) {
                 if (Type.subTypeOfUnion(value.getType(), Type.NUMERIC)) {
-                    if (((NumericValue)value).isNaN()) {
+                    if (((NumericValue) value.unwrapUserType()).isNaN()) {
                         //although NaN does not equal itself, if $arg 
                         //contains multiple NaN values a single NaN is returned.
                         if (!hasAlreadyNaN) {

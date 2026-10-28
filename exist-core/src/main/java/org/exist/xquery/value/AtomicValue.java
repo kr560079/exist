@@ -223,6 +223,18 @@ public abstract class AtomicValue implements Item, Sequence, Indexable {
         return this;
     }
 
+    /**
+     * Get the value of a built-in type that this value holds. A value of a user-defined (schema)
+     * type returns its underlying built-in value, all other values return themselves.
+     *
+     * <p>Code which casts an atomic value to a concrete value class must unwrap it first.</p>
+     *
+     * @return the value of a built-in type
+     */
+    public AtomicValue unwrapUserType() {
+        return this;
+    }
+
     @Override
     public NodeSet toNodeSet() throws XPathException {
         //TODO : solution that may be worth to investigate

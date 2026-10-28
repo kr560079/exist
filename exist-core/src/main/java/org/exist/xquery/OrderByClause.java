@@ -203,7 +203,8 @@ public class OrderByClause extends AbstractFLWORClause {
             final OrderSpec spec = orderSpecs.get(i);
             final Sequence keySeq = spec.getSortExpression().eval(contextSequence, null);
             if (keySeq.hasOne()) {
-                AtomicValue atomized = keySeq.itemAt(0).atomize();
+                // sort keys of user-defined (schema) types order as values of their built-in base type
+                AtomicValue atomized = keySeq.itemAt(0).atomize().unwrapUserType();
                 // Cast xs:untypedAtomic to xs:string per W3C XQuery 3.1 §3.9.4
                 if (Type.UNTYPED_ATOMIC == atomized.getType()) {
                     atomized = atomized.convertTo(Type.STRING);

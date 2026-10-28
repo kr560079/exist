@@ -21,13 +21,22 @@
  */
 package org.exist.xquery.schema;
 
+import org.exist.xquery.value.Type;
+
 /**
  * The type annotation of a node: the type code of its type and whether it is nilled.
  *
- * <p>Temporary form, replaced by the full record once schema-validated nodes carry annotations.</p>
- *
- * @param typeCode the {@link org.exist.xquery.value.Type} code of the annotated type
- * @param nilled   true if the node is nilled
+ * @param typeCode the {@link Type} code of the annotated type, built-in or user-defined
+ * @param nilled   true if the node is nilled ({@code xsi:nil="true"} on an element whose declaration is nillable)
  */
 public record TypeAnnotation(int typeCode, boolean nilled) {
+
+    /** An element of a collection without a schema. */
+    public static final TypeAnnotation UNTYPED = new TypeAnnotation(Type.UNTYPED, false);
+
+    /** An element of a collection with a schema which carries no stored annotation. */
+    public static final TypeAnnotation ANY_TYPE = new TypeAnnotation(Type.ANY_TYPE, false);
+
+    /** An attribute which carries no stored annotation. */
+    public static final TypeAnnotation UNTYPED_ATOMIC = new TypeAnnotation(Type.UNTYPED_ATOMIC, false);
 }

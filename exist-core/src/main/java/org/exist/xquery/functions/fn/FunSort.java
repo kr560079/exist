@@ -24,6 +24,7 @@ package org.exist.xquery.functions.fn;
 import com.ibm.icu.text.Collator;
 import org.exist.dom.QName;
 import org.exist.xquery.*;
+import org.exist.xquery.value.AtomicValue;
 import org.exist.xquery.value.FunctionParameterSequenceType;
 import org.exist.xquery.value.FunctionReference;
 import org.exist.xquery.value.FunctionReturnSequenceType;
@@ -215,7 +216,7 @@ public class FunSort extends BasicFunction {
         return deepLessThan(seq1.tail(), seq2.tail(), collator);
       }
 
-      if (Type.subTypeOfUnion(seq1Item1.getType(), Type.NUMERIC) && ((NumericValue)seq1Item1).isNaN()) {
+      if (Type.subTypeOfUnion(seq1Item1.getType(), Type.NUMERIC) && ((NumericValue) ((AtomicValue) seq1Item1).unwrapUserType()).isNaN()) {
         return true;
       }
 

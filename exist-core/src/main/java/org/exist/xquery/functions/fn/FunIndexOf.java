@@ -290,7 +290,7 @@ The result sequence is in ascending numeric order.""";
             for (final SequenceIterator i = source.iterate(); i.hasNext(); j++) {
                 final AtomicValue next = i.nextItem().atomize();
                 // NaN never matches under eq, so it can never appear in the result
-                if (Type.subTypeOfUnion(next.getType(), Type.NUMERIC) && ((NumericValue) next).isNaN()) {
+                if (Type.subTypeOfUnion(next.getType(), Type.NUMERIC) && ((NumericValue) next.unwrapUserType()).isNaN()) {
                     continue;
                 }
                 IntList list = index.get(next);
@@ -324,7 +324,7 @@ The result sequence is in ascending numeric order.""";
      * documented heuristic permits it.
      */
     private Sequence lookupInIndex(final AtomicValue srch, final Sequence source, final Collator collator) throws XPathException {
-        if (Type.subTypeOfUnion(srch.getType(), Type.NUMERIC) && ((NumericValue) srch).isNaN()) {
+        if (Type.subTypeOfUnion(srch.getType(), Type.NUMERIC) && ((NumericValue) srch.unwrapUserType()).isNaN()) {
             return Sequence.EMPTY_SEQUENCE;
         }
         final IntList list;

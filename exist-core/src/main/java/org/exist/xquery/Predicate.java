@@ -30,6 +30,7 @@ import org.exist.dom.persistent.NodeProxy;
 import org.exist.dom.persistent.NodeSet;
 import org.exist.dom.persistent.VirtualNodeSet;
 import org.exist.xquery.util.ExpressionDumper;
+import org.exist.xquery.value.AtomicValue;
 import org.exist.xquery.value.Item;
 import org.exist.xquery.value.NumericValue;
 import org.exist.xquery.value.Sequence;
@@ -320,7 +321,7 @@ public class Predicate extends PathExpr {
                     final Item item = i.nextItem();
                     final Sequence innerSeq = inner.eval(contextSequence, item);
                     if (innerSeq.hasOne()) {
-                        final NumericValue nv = (NumericValue) innerSeq.itemAt(0);
+                        final NumericValue nv = toNumeric(innerSeq.itemAt(0));
                         // Non integers return... nothing, not even an error !
                         if (!nv.hasFractionalPart() && !nv.isZero()) {
                             positions.add(nv);
@@ -344,7 +345,7 @@ public class Predicate extends PathExpr {
                     if (innerSeq.hasOne()
                             && Type.subTypeOfUnion(innerSeq.getItemType(), Type.NUMERIC)) {
                         // TODO : introduce a check in innerSeq.hasOne() ?
-                        final NumericValue nv = (NumericValue) innerSeq;
+                        final NumericValue nv = toNumeric(innerSeq.itemAt(0));
                         // Non integers return... nothing, not even an error !
                         if (!nv.hasFractionalPart() && !nv.isZero()) {
                             positions.add(nv);
@@ -473,7 +474,7 @@ public class Predicate extends PathExpr {
                         // TODO : understand why we sort here...
                         temp.sortInDocumentOrder();
                         for (final SequenceIterator j = innerSeq.iterate(); j.hasNext(); ) {
-                            final NumericValue v = (NumericValue) j.nextItem();
+                            final NumericValue v = toNumeric(j.nextItem());
                             // Non integers return... nothing, not even an error !
                             if (!v.hasFractionalPart() && !v.isZero()) {
                                 // ... whereas we don't want a sorted array here
@@ -530,7 +531,7 @@ public class Predicate extends PathExpr {
                         }
                         if (!temp.isEmpty()) {
                             for (final SequenceIterator j = innerSeq.iterate(); j.hasNext(); ) {
-                                final NumericValue v = (NumericValue) j.nextItem();
+                                final NumericValue v = toNumeric(j.nextItem());
                                 // Non integers return... nothing, not even an error !
                                 if (!v.hasFractionalPart() && !v.isZero()) {
                                     final int pos = (reverseAxis ?
@@ -569,7 +570,7 @@ public class Predicate extends PathExpr {
             Sequence result = Sequence.EMPTY_SEQUENCE;
             if (innerSeq.hasOne()) {
                 // optimise for single position lookup
-                final NumericValue v = (NumericValue) innerSeq.itemAt(0);
+                final NumericValue v = toNumeric(innerSeq.itemAt(0));
                 // Non integers return... nothing, not even an error !
                 if (isNonZeroInteger(v)) {
                     final int pos = calculatePos(reverseAxis, contextSequence, v);
@@ -582,7 +583,7 @@ public class Predicate extends PathExpr {
                 // multi-position lookup
                 Set<NumericValue> set = null;
                 for (final SequenceIterator i = innerSeq.iterate(); i.hasNext(); ) {
-                    final NumericValue v = (NumericValue) i.nextItem();
+                    final NumericValue v = toNumeric(i.nextItem());
                     // Non integers return... nothing, not even an error !
                     if (isNonZeroInteger(v)) {
                         final int pos = calculatePos(reverseAxis, contextSequence, v);
@@ -602,6 +603,17 @@ public class Predicate extends PathExpr {
             }
             return result;
         }
+    }
+
+    /**
+     * Get a positional predicate value as a numeric value; a value of a user-defined (schema)
+     * type is unwrapped to its built-in base value.
+     *
+     * @param item a numeric item
+     * @return the numeric value
+     */
+    static NumericValue toNumeric(final Item item) {
+        return (NumericValue) (item instanceof AtomicValue atomic ? atomic.unwrapUserType() : item);
     }
 
     private static boolean isNonZeroInteger(final NumericValue v) {

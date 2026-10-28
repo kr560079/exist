@@ -24,6 +24,7 @@ package org.exist.xquery;
 import org.exist.xquery.Constants.ArithmeticOperator;
 import org.exist.xquery.util.ExpressionDumper;
 import org.exist.xquery.value.Item;
+import org.exist.xquery.value.AtomicValue;
 import org.exist.xquery.value.NumericValue;
 import org.exist.xquery.value.Sequence;
 import org.exist.xquery.value.Type;
@@ -65,9 +66,13 @@ public class UnaryExpr extends PathExpr {
         
         Sequence result;
         
-        final Sequence item = getExpression(0).eval(contextSequence, null);
+        Sequence item = getExpression(0).eval(contextSequence, null);
         if (item.isEmpty())
         	{return item;}
+        if (item instanceof AtomicValue atomic) {
+            // a value of a user-defined (schema) type operates as a value of its built-in base type
+            item = atomic.unwrapUserType();
+        }
         
 		final NumericValue value;
         if (Type.subTypeOfUnion(item.getItemType(), Type.NUMERIC)) {

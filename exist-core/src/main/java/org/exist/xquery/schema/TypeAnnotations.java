@@ -107,6 +107,6 @@ public final class TypeAnnotations {
     }
 
     private static TypeAnnotation unannotated(final int kind) {
-        return new TypeAnnotation(kind == Type.ELEMENT ? Type.UNTYPED : Type.UNTYPED_ATOMIC, false);
+        return kind == Type.ELEMENT ? TypeAnnotation.UNTYPED : TypeAnnotation.UNTYPED_ATOMIC;
     }
 }

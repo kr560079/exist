@@ -107,7 +107,7 @@ public class ArrayType extends FunctionReference implements Lookup.LookupSupport
             throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
                     "Position argument for array lookup must be a positive integer");
         }
-        final int pos = ((IntegerValue) key).getInt();
+        final int pos = ((IntegerValue) key.unwrapUserType()).getInt();
         if (pos <= 0 || pos > getSize()) {
             throw new XPathException(getExpression(), ErrorCodes.FOAY0001, indexOutOfBoundsMessage(pos));
         }

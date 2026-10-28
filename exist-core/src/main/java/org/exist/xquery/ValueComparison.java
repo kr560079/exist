@@ -136,6 +136,9 @@ public class ValueComparison extends GeneralComparison {
 	 * @throws XPathException in case of dynamic error
 	 */
 	public static boolean compareAtomic(@Nullable final Collator collator, AtomicValue lv, AtomicValue rv, final StringTruncationOperator truncation, final Comparison relation) throws XPathException {
+		// values of user-defined (schema) types compare as values of their built-in base type
+		lv = lv.unwrapUserType();
+		rv = rv.unwrapUserType();
 		final Tuple2<AtomicValue, AtomicValue> comparableLvRv = makeComparable(lv, rv, truncation);
 		lv = comparableLvRv._1;
 		rv = comparableLvRv._2;
@@ -159,6 +162,8 @@ public class ValueComparison extends GeneralComparison {
 	 * @throws XPathException in case of dynamic error
 	 */
 	public static int compareAtomic(@Nullable final Collator collator, AtomicValue lv, AtomicValue rv) throws XPathException {
+		lv = lv.unwrapUserType();
+		rv = rv.unwrapUserType();
 		final Tuple2<AtomicValue, AtomicValue> comparableLvRv = makeComparable(lv, rv, StringTruncationOperator.NONE);
 		lv = comparableLvRv._1;
 		rv = comparableLvRv._2;

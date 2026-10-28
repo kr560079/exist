@@ -29,6 +29,7 @@ import org.exist.dom.persistent.NodeSet;
 import org.exist.storage.DBBroker;
 import org.exist.xquery.Constants.ArithmeticOperator;
 import org.exist.xquery.util.ExpressionDumper;
+import org.exist.xquery.value.AtomicValue;
 import org.exist.xquery.value.ComputableValue;
 import org.exist.xquery.value.Item;
 import org.exist.xquery.value.NumericValue;
@@ -236,8 +237,9 @@ public class OpNumeric extends BinaryOp {
         else if (lseq.isEmpty())
             {result = Sequence.EMPTY_SEQUENCE;}
         else {
-            Item lvalue = lseq.itemAt(0);
-            Item rvalue = rseq.itemAt(0);
+            // values of user-defined (schema) types operate as values of their built-in base type
+            Item lvalue = unwrapUserType(lseq.itemAt(0));
+            Item rvalue = unwrapUserType(rseq.itemAt(0));
             try {
                 if (lvalue.getType() == Type.UNTYPED_ATOMIC || lvalue.getType() == Type.ANY_ATOMIC_TYPE)
                     {lvalue = lvalue.convertTo(Type.NUMERIC);}
@@ -291,6 +293,10 @@ public class OpNumeric extends BinaryOp {
             //TODO : refine previously set type ? -pb
             {returnType = result.getItemType();}
         return result;
+    }
+
+    private static Item unwrapUserType(final Item item) {
+        return item instanceof AtomicValue atomic ? atomic.unwrapUserType() : item;
     }
 
     public ComputableValue applyOperator(ComputableValue left, ComputableValue right)

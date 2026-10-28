@@ -293,6 +293,13 @@ public class ErrorCodes {
     // See {@link ErrorDisclosure}.
     public static final ErrorCode EXXQDY0010 = new EXistErrorCode("EXXQDY0010", "Query execution failed.");
 
+    // --- Schema Aware error codes ---
+    public static final ErrorCode EXSA0001 = new EXistErrorCode("EXSA0001", "The schema imported by the query does not match the schema the stored documents were annotated with.");
+    public static final ErrorCode EXSA0002 = new EXistErrorCode("EXSA0002", "The schema configured for the collection is unavailable.");
+    public static final ErrorCode EXSA0003 = new EXistErrorCode("EXSA0003", "The schema type index is stale for the document.");
+    public static final ErrorCode EXSA0004 = new EXistErrorCode("EXSA0004", "A node could not be assigned a type and the collection is configured to reject such documents.");
+    // --- End Schema Aware error codes ---
+
     public static final ErrorCode ERROR = new EXistErrorCode("ERROR", "Error.");
 
     public static class ErrorCode {

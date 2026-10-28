@@ -458,7 +458,8 @@ public class OrderedValueSequence extends AbstractSequence {
                 final Expression sortExpression = orderSpec.getSortExpression();
                 final Sequence seq = sortExpression.eval(contextSequence, null);
                 if (seq.hasOne()) {
-                    AtomicValue value = seq.itemAt(0).atomize();
+                    // sort keys of user-defined (schema) types order as values of their built-in base type
+                    AtomicValue value = seq.itemAt(0).atomize().unwrapUserType();
                     int valueType = value.getType();
 
                     /*

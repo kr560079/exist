@@ -92,7 +92,7 @@ public class FunAvg extends Function {
         } else {
             final SequenceIterator iter = inner.iterate();
             Item item = iter.nextItem();
-            AtomicValue value = item.atomize();
+            AtomicValue value = item.atomize().unwrapUserType();
             //Any values of type xdt:untypedAtomic are cast to xs:double
             if (value.getType() == Type.UNTYPED_ATOMIC) 
                 {value = value.convertTo(Type.DOUBLE);}
@@ -104,7 +104,7 @@ public class FunAvg extends Function {
             //Set the first value
             while (iter.hasNext()) {
                 item = iter.nextItem();
-                value = item.atomize();
+                value = item.atomize().unwrapUserType();
                 //Any value of type xdt:untypedAtomic are cast to xs:double
                 if (value.getType() == Type.UNTYPED_ATOMIC) 
                     {value = value.convertTo(Type.DOUBLE);}

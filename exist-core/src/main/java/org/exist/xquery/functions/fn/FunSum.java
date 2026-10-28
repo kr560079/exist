@@ -100,7 +100,7 @@ public class FunSum extends Function {
 		} else {
     		final SequenceIterator iter = inner.iterate();
     		Item item = iter.nextItem();
-    		AtomicValue value = item.atomize();
+    		AtomicValue value = item.atomize().unwrapUserType();
 
         	value = check(value, null);
     		
@@ -108,7 +108,7 @@ public class FunSum extends Function {
     		ComputableValue sum = (ComputableValue) value;
     		while (iter.hasNext()) {
     			item = iter.nextItem();
-    			value = item.atomize();
+    			value = item.atomize().unwrapUserType();
 
             	value = check(value, sum);
 

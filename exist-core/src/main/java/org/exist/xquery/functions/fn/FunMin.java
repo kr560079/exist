@@ -151,7 +151,7 @@ the smallest value is made according to the collation that is used. """;
                 final Item item = iter.nextItem();
                 if (item instanceof QNameValue)
             		{throw new XPathException(this, ErrorCodes.FORG0006, "Cannot compare " + Type.getTypeName(item.getType()), arg);}
-                AtomicValue value = item.atomize();
+                AtomicValue value = item.atomize().unwrapUserType();
 
                 //Duration values must either all be xs:yearMonthDuration values or must all be xs:dayTimeDuration values.
         		if (Type.subTypeOf(value.getType(), Type.DURATION)) {

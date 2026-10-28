@@ -152,7 +152,10 @@ public abstract class AbstractMapType extends FunctionReference
      *
      * @return true if the keys are equal according to the rules of op:same-key, false otherwise.
      */
-    protected static boolean sameKey(@Nullable final Collator collator, final AtomicValue k1, final AtomicValue k2) {
+    protected static boolean sameKey(@Nullable final Collator collator, AtomicValue k1, AtomicValue k2) {
+        // keys of user-defined (schema) types compare as values of their built-in base type
+        k1 = k1.unwrapUserType();
+        k2 = k2.unwrapUserType();
         final int k1Type = k1.getType();
         final int k2Type = k2.getType();
 

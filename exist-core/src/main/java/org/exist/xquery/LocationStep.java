@@ -1086,7 +1086,7 @@ public class LocationStep extends Step {
             final Predicate pred = predicates[0];
             final Sequence seq = pred.preprocess();
 
-            final NumericValue v = (NumericValue) seq.itemAt(0);
+            final NumericValue v = Predicate.toNumeric(seq.itemAt(0));
             // Non integers return... nothing, not even an error !
             if (!v.hasFractionalPart() && !v.isZero()) {
                 position = v.getInt();

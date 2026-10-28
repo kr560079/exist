@@ -1102,6 +1102,9 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
      * @throws XPathException if an error occurs during the comparison
      */
     private boolean compareAtomic(final Collator collator, AtomicValue lv, AtomicValue rv) throws XPathException {
+        // values of user-defined (schema) types compare as values of their built-in base type
+        lv = lv.unwrapUserType();
+        rv = rv.unwrapUserType();
         // get types locally as convertForCompareAtomic may change the types of the AtomicValue itself
         int ltype = lv.getType();
         int rtype = rv.getType();
