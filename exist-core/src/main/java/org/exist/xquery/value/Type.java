@@ -451,6 +451,15 @@ public class Type {
      * @return name of the type
      */
     public static @Nullable String getTypeName(final int type) {
+        final UserDefinedType userType = UserTypeRegistry.get(type);
+        if (userType != null) {
+            final org.exist.dom.QName name = userType.name();
+            if (name == null) {
+                return userType.anonymousId();
+            }
+            final String ns = name.getNamespaceURI();
+            return "Q{" + (ns == null ? "" : ns) + "}" + name.getLocalPart();
+        }
         final String[] names = typeNames.get(type);
         if (names != null) {
             return names[0];
@@ -531,6 +540,22 @@ public class Type {
             return false;
         }
 
+        // user-defined (schema) types
+        final UserDefinedType userSuper = UserTypeRegistry.get(supertype);
+        if (userSuper != null) {
+            // a built-in type is only a subtype of a user-defined union type, via its members
+            return subTypeOfUserType(subtype, supertype, userSuper);
+        }
+        final UserDefinedType userSub = UserTypeRegistry.get(subtype);
+        if (userSub != null) {
+            // continue with the base type until a built-in type is reached
+            final int base = userSub.baseCode();
+            if (base <= 0 || base == subtype) {
+                return false;
+            }
+            return subTypeOf(base, supertype);
+        }
+
         // Single get() rather than containsKey() + a redundant get() inside
         // subTypeOfUnion: halves map traversals on the union dispatch path.
         final IntArraySet supertypeMembers = unionTypes.get(supertype);
@@ -550,6 +575,24 @@ public class Type {
         return subTypeOf(subtype, supertype);
     }
 
+    private static boolean subTypeOfUserType(final int subtype, final int supertype, final UserDefinedType userSuper) {
+        // walk the base chain of the (user) subtype
+        for (UserDefinedType t = UserTypeRegistry.get(subtype); t != null; t = UserTypeRegistry.get(t.baseCode())) {
+            if (t.code() == supertype) {
+                return true;
+            }
+        }
+        // a user union type: subtype of any of its members
+        if (userSuper.variety() == Variety.UNION) {
+            for (final int member : userSuper.memberCodes()) {
+                if (subTypeOf(subtype, member)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /**
      * Get the type code of the supertype of the specified subtype.
      *
@@ -563,6 +606,11 @@ public class Type {
             return ITEM;
         } else if (subtype == ANY_TYPE) {
             return subtype;
+        }
+
+        final UserDefinedType userType = UserTypeRegistry.get(subtype);
+        if (userType != null) {
+            return userType.baseCode() > 0 ? userType.baseCode() : ITEM;
         }
 
         if (subtype >= superTypes.length) {
@@ -641,6 +689,18 @@ public class Type {
      * @return true if the type is a member, false otherwise.
      */
     public static boolean hasMember(final int unionType, final int other) {
+        final UserDefinedType userUnion = UserTypeRegistry.get(unionType);
+        if (userUnion != null) {
+            if (userUnion.variety() != Variety.UNION) {
+                return false;
+            }
+            for (final int member : userUnion.memberCodes()) {
+                if (member == other) {
+                    return true;
+                }
+            }
+            return false;
+        }
         final IntArraySet members = unionTypes.get(unionType);
         if (members == null) {
             return false;
@@ -657,6 +717,10 @@ public class Type {
      * @return true if subtype is a sub type of a member of the union type
      */
     public static boolean subTypeOfUnion(final int subtype, final int unionType) {
+        final UserDefinedType userUnion = UserTypeRegistry.get(unionType);
+        if (userUnion != null) {
+            return userUnion.variety() == Variety.UNION && subTypeOf(subtype, unionType);
+        }
         final IntArraySet members = unionTypes.get(unionType);
         if (members == null) {
             return false;
@@ -722,6 +786,13 @@ public class Type {
      * @throws IllegalArgumentException if {@code type} has no defined primitive type
      */
     public static int primitiveTypeOf(final int type) throws IllegalArgumentException {
+        final UserDefinedType userType = UserTypeRegistry.get(type);
+        if (userType != null) {
+            if (userType.primitiveCode() <= 0) {
+                throw new IllegalArgumentException("Primitive type is not defined for: " + getTypeName(type));
+            }
+            return userType.primitiveCode();
+        }
         final int primitiveType = primitiveTypes.get(type);
         if (primitiveType == NO_SUCH_VALUE) {
             final String typeName = getTypeName(type);
