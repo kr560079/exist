@@ -21,7 +21,10 @@
  */
 package org.exist.indexing.schematype;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.exist.dom.QName;
+import org.exist.security.Subject;
 import org.exist.storage.DBBroker;
 import org.exist.util.DatabaseConfigurationException;
 import org.exist.xquery.XPathException;
@@ -40,16 +43,91 @@ import java.util.Set;
 /**
  * The parsed {@code <schema-type>} / {@code <typed-values>} configuration of a collection.
  *
- * @param href the location of the root schema
- * @param onUnassignable what to do with nodes that cannot be assigned a type
- * @param checkValues whether lexical values are checked against their simple type at store time
- * @param allowRemote whether includes and imports may be fetched over the network
- * @param reindexOnSchemaChange whether a changed schema triggers an automatic reindex
- * @param typedValueTypes the types that get typed-value index entries
- * @param schema the compiled schema
+ * <p>A configuration whose schema could not be loaded when the collection configuration was read stays configured
+ * in an <em>unavailable</em> state ({@link #schema()} is null): stores into the collection fail with
+ * {@code EXSA0002}, and so do queries atomizing its nodes, until the schema can be loaded again
+ * ({@link #recover}).</p>
  */
-public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boolean checkValues, boolean allowRemote,
-        boolean reindexOnSchemaChange, Set<QName> typedValueTypes, CompiledSchema schema) {
+public final class SchemaTypeConfig {
+
+    private static final Logger LOG = LogManager.getLogger(SchemaTypeConfig.class);
+
+    private final String href;
+    private final OnUnassignable onUnassignable;
+    private final boolean checkValues;
+    private final boolean allowRemote;
+    private final boolean reindexOnSchemaChange;
+    private final Set<QName> typedValueTypes;
+    private final @Nullable Subject loadAs;
+    private volatile @Nullable CompiledSchema schema;
+    private volatile @Nullable String unavailableReason;
+
+    SchemaTypeConfig(final String href, final OnUnassignable onUnassignable, final boolean checkValues, final boolean allowRemote,
+            final boolean reindexOnSchemaChange, final Set<QName> typedValueTypes, @Nullable final CompiledSchema schema,
+            @Nullable final String unavailableReason, @Nullable final Subject loadAs) {
+        this.href = href;
+        this.onUnassignable = onUnassignable;
+        this.checkValues = checkValues;
+        this.allowRemote = allowRemote;
+        this.reindexOnSchemaChange = reindexOnSchemaChange;
+        this.typedValueTypes = typedValueTypes;
+        this.schema = schema;
+        this.unavailableReason = unavailableReason;
+        this.loadAs = loadAs;
+    }
+
+    /** the location of the root schema */
+    public String href() {
+        return href;
+    }
+
+    /** what to do with nodes that cannot be assigned a type */
+    public OnUnassignable onUnassignable() {
+        return onUnassignable;
+    }
+
+    /** whether lexical values are checked against their simple type at store time */
+    public boolean checkValues() {
+        return checkValues;
+    }
+
+    /** whether includes and imports may be fetched over the network */
+    public boolean allowRemote() {
+        return allowRemote;
+    }
+
+    /** whether a changed schema triggers an automatic reindex */
+    public boolean reindexOnSchemaChange() {
+        return reindexOnSchemaChange;
+    }
+
+    /** the types that get typed-value index entries */
+    public Set<QName> typedValueTypes() {
+        return typedValueTypes;
+    }
+
+    /** the compiled schema, null while the configuration is unavailable */
+    public @Nullable CompiledSchema schema() {
+        return schema;
+    }
+
+    /** why the schema could not be loaded, null if it is available */
+    @Nullable String unavailableReason() {
+        return unavailableReason;
+    }
+
+    /** the subject the schema documents are read as: the owner of the collection configuration document */
+    @Nullable Subject loadAs() {
+        return loadAs;
+    }
+
+    /** the schema is loadable again: make the configuration available (no effect if it already is) */
+    void recover(final CompiledSchema loaded) {
+        if (schema == null) {
+            schema = loaded;
+            unavailableReason = null;
+        }
+    }
 
     private static final String HREF_ATTR = "href";
     private static final String ON_UNASSIGNABLE_ATTR = "on-unassignable";
@@ -67,6 +145,15 @@ public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boole
      */
     static SchemaTypeConfig parse(final DBBroker broker, final Element schemaTypeEl, @Nullable final Element typedValuesEl,
             final Map<String, String> namespaces) throws DatabaseConfigurationException {
+        return parse(broker, schemaTypeEl, typedValuesEl, namespaces, false);
+    }
+
+    /**
+     * @param lenient true when an existing configuration is (re)loaded: a schema that cannot be loaded then yields an
+     *                unavailable configuration instead of an exception; false when a configuration is stored
+     */
+    static SchemaTypeConfig parse(final DBBroker broker, final Element schemaTypeEl, @Nullable final Element typedValuesEl,
+            final Map<String, String> namespaces, final boolean lenient) throws DatabaseConfigurationException {
         final String href = schemaTypeEl.getAttribute(HREF_ATTR);
         if (href.isEmpty()) {
             throw new DatabaseConfigurationException("<schema-type> requires an '" + HREF_ATTR + "' attribute");
@@ -85,7 +172,8 @@ public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boole
         final boolean allowRemote = booleanAttr(schemaTypeEl, ALLOW_REMOTE_ATTR, false);
         final boolean reindex = booleanAttr(schemaTypeEl, REINDEX_ATTR, false);
 
-        final CompiledSchema schema;
+        CompiledSchema schema = null;
+        String unavailable = null;
         try {
             schema = broker.getBrokerPool().getSchemaRegistry().load(broker, href, allowRemote);
         } catch (final SchemaLoadException e) {
@@ -100,7 +188,11 @@ public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boole
                 }
                 msg.append(']');
             }
-            throw new DatabaseConfigurationException(msg.toString(), e);
+            if (!lenient) {
+                throw new DatabaseConfigurationException(msg.toString(), e);
+            }
+            unavailable = msg.toString();
+            LOG.error("{}: the collection stays configured; stores and queries fail with EXSA0002 until the schema can be loaded", unavailable);
         }
 
         final Set<QName> typedValueTypes = new LinkedHashSet<>();
@@ -114,7 +206,8 @@ public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boole
             }
         }
 
-        return new SchemaTypeConfig(href, onUnassignable, checkValues, allowRemote, reindex, Set.copyOf(typedValueTypes), schema);
+        return new SchemaTypeConfig(href, onUnassignable, checkValues, allowRemote, reindex, Set.copyOf(typedValueTypes), schema,
+                unavailable, broker.getCurrentSubject());
     }
 
     private static boolean booleanAttr(final Element el, final String name, final boolean defaultValue) throws DatabaseConfigurationException {
@@ -130,7 +223,7 @@ public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boole
         };
     }
 
-    private static QName resolveType(final Element typeEl, final CompiledSchema schema, final Map<String, String> namespaces)
+    private static QName resolveType(final Element typeEl, @Nullable final CompiledSchema schema, final Map<String, String> namespaces)
             throws DatabaseConfigurationException {
         final String name = typeEl.getAttribute(NAME_ATTR);
         if (name.isEmpty()) {
@@ -158,7 +251,7 @@ public record SchemaTypeConfig(String href, OnUnassignable onUnassignable, boole
             } catch (final XPathException e) {
                 throw new DatabaseConfigurationException("Unknown built-in type '" + name + "' in <typed-values>");
             }
-        } else if (schema.namedType(qname).isEmpty()) {
+        } else if (schema != null && schema.namedType(qname).isEmpty()) {
             throw new DatabaseConfigurationException("Unknown type '" + name + "' in <typed-values>: not defined by the configured schema");
         }
         return qname;

@@ -27,11 +27,15 @@ import org.exist.backup.RawDataBackup;
 import org.exist.indexing.AbstractIndex;
 import org.exist.indexing.IndexWorker;
 import org.exist.indexing.RawBackupSupport;
+import org.exist.security.Subject;
 import org.exist.storage.BrokerPool;
 import org.exist.storage.DBBroker;
 import org.exist.storage.btree.BTree;
 import org.exist.storage.btree.DBException;
 import org.exist.storage.index.BFile;
+import org.exist.storage.txn.Txn;
+import org.exist.xmldb.XmldbURI;
+import org.exist.xquery.schema.SchemaKey;
 import org.exist.util.DatabaseConfigurationException;
 import org.exist.util.FileUtils;
 import org.exist.xquery.schema.CompiledSchema;
@@ -45,6 +49,7 @@ import java.nio.file.Path;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -84,7 +89,13 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     private final Set<Integer> collectionsWithMeta = ConcurrentHashMap.newKeySet();
     /** collections whose schema failed to load, with the reason: a store failed with EXSA0002 */
     private final ConcurrentHashMap<Integer, String> unavailable = new ConcurrentHashMap<>();
-    private final Object reindexLock = new Object();
+    /** (collection, schema key) pairs for which an automatic reindex has been scheduled */
+    private final Set<ReindexKey> scheduledReindexes = ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.atomic.AtomicInteger scheduledReindexCount = new java.util.concurrent.atomic.AtomicInteger();
+    private java.util.concurrent.ExecutorService reindexExecutor;
+
+    private record ReindexKey(int collectionId, SchemaKey schema) {
+    }
     /** unstable type ids already reported */
     private final Set<String> reportedUnstable = ConcurrentHashMap.newKeySet();
 
@@ -118,6 +129,12 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
 
     @Override
     public void close() throws DBException {
+        synchronized (this) {
+            if (reindexExecutor != null) {
+                reindexExecutor.shutdownNow();
+                reindexExecutor = null;
+            }
+        }
         if (db != null) {
             db.close();
         }
@@ -260,9 +277,49 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
         return unavailable.get(collectionId);
     }
 
-    /** serializes automatic reindexes after a schema change */
-    Object reindexLock() {
-        return reindexLock;
+    /**
+     * Schedule the asynchronous reindex of a collection whose schema key changed, at most once per
+     * (collection, schema key). It runs on a background thread as {@code subject} (the owner of the collection
+     * configuration, who configured the schema), not as the user whose query found the index stale.
+     *
+     * @return true if it was scheduled by this call
+     */
+    boolean scheduleReindex(final org.exist.collections.Collection collection, final SchemaKey key, @Nullable final Subject subject) {
+        final int collectionId = collection.getId();
+        final ReindexKey reindexKey = new ReindexKey(collectionId, key);
+        if (!scheduledReindexes.add(reindexKey)) {
+            return false;
+        }
+        scheduledReindexes.removeIf(k -> k.collectionId() == collectionId && !k.equals(reindexKey));
+        scheduledReindexCount.incrementAndGet();
+        final XmldbURI uri = collection.getURI();
+        synchronized (this) {
+            if (reindexExecutor == null) {
+                reindexExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                    final Thread thread = new Thread(pool.getThreadGroup(), r, "schema-type-reindex");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+            }
+            reindexExecutor.execute(() -> reindex(uri, subject));
+        }
+        return true;
+    }
+
+    private void reindex(final XmldbURI uri, @Nullable final Subject subject) {
+        try (final DBBroker broker = pool.get(Optional.ofNullable(subject));
+             final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            LOG.info("The schema of collection {} changed: reindexing it", uri);
+            broker.reindexCollection(txn, uri);
+            txn.commit();
+        } catch (final Exception e) {
+            LOG.error("Error reindexing collection {} after a schema change: {}", uri, e.getMessage(), e);
+        }
+    }
+
+    /** @return how many automatic reindexes were scheduled (for tests) */
+    int scheduledReindexCount() {
+        return scheduledReindexCount.get();
     }
 
     /**

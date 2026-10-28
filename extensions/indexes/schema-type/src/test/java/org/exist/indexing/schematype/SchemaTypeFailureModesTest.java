@@ -23,6 +23,7 @@ package org.exist.indexing.schematype;
 
 import org.exist.collections.Collection;
 import org.exist.collections.CollectionConfiguration;
+import org.exist.collections.ConfigReloader;
 import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.NodeProxy;
 import org.exist.storage.BrokerPool;
@@ -179,20 +180,111 @@ public class SchemaTypeFailureModesTest {
     }
 
     @Test
-    void reindexOnSchemaChangeRebuildsAutomatically() throws Exception {
+    void storingConfigurationWithChangedSchemaReindexesInTheStore() throws Exception {
         configure(XCONF_AUTO);
         store(ST, "t1.xml", fixture("trade-1.xml"));
-        assertTyped("/db/st/t1.xml");
         final DocMeta before = docMeta("t1.xml");
 
         modifyXsd();
         store(CONF, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_AUTO);
 
-        // no EXSA0003 and no manual reindex
+        // reindexed by the store of the configuration: fresh immediately
         assertTyped("/db/st/t1.xml");
-        final DocMeta after = docMeta("t1.xml");
-        assertNotEquals(before.indexedWith(), after.indexedWith(), "the document must have been reindexed with the new schema");
-        assertEquals(config().schema().key(), after.indexedWith());
+        assertNotEquals(before.indexedWith(), docMeta("t1.xml").indexedWith());
+        assertEquals(0, index().scheduledReindexCount());
+    }
+
+    @Test
+    void reindexOnSchemaChangeRebuildsAutomatically() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        assertTyped("/db/st/t1.xml");
+        final DocMeta before = docMeta("t1.xml");
+        final int scheduledBefore = index().scheduledReindexCount();
+
+        modifyXsd();
+        // the configuration is reloaded without being stored: the schema key changes, the documents are stale
+        ConfigReloader.reloadFromStorage(broker, CONF);
+
+        // the first query gets EXSA0003 (or succeeds if the asynchronous reindex was quick); then it works, with no manual reindex
+        final long deadline = System.nanoTime() + 10_000_000_000L;
+        boolean fresh = false;
+        int staleQueries = 0;
+        while (!fresh && System.nanoTime() < deadline) {
+            try {
+                assertTyped("/db/st/t1.xml");
+                fresh = true;
+            } catch (final XPathException e) {
+                assertEquals("EXSA0003", e.getErrorCode().getErrorQName().getLocalPart(), e.getMessage());
+                staleQueries++;
+                Thread.sleep(20);
+            }
+        }
+        assertTrue(fresh, "the collection was not reindexed in time");
+        assertNotEquals(before.indexedWith(), docMeta("t1.xml").indexedWith());
+        assertEquals(config().schema().key(), docMeta("t1.xml").indexedWith());
+        // however many stale queries there were, exactly one reindex was scheduled for this schema key
+        assertEquals(scheduledBefore + 1, index().scheduledReindexCount(), "stale queries: " + staleQueries);
+    }
+
+    @Test
+    void repeatedStaleQueriesScheduleOneReindex() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        modifyXsd();
+        ConfigReloader.reloadFromStorage(broker, CONF);
+        final int scheduledBefore = index().scheduledReindexCount();
+        for (int i = 0; i < 20; i++) {
+            try {
+                assertTyped("/db/st/t1.xml");
+            } catch (final XPathException e) {
+                assertEquals("EXSA0003", e.getErrorCode().getErrorQName().getLocalPart(), e.getMessage());
+            }
+        }
+        assertEquals(scheduledBefore + 1, index().scheduledReindexCount());
+    }
+
+    @Test
+    void schemaUnavailableAtStartupKeepsCollectionConfigured() throws Exception {
+        configure(XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        remove(SCHEMAS, "trade.xsd");
+
+        restartServer();
+
+        // the configuration survives the unloadable schema: stores fail, queries raise EXSA0002
+        final Exception e = assertThrows(Exception.class, () -> store(ST, "t2.xml", fixture("trade-1.xml")));
+        assertTrue(messages(e).contains("EXSA0002"), messages(e));
+        assertAnnotationError("EXSA0002", "/db/st/t1.xml");
+
+        // the schema is loadable again: it recovers on first use
+        store(SCHEMAS, "trade.xsd", fixture("trade.xsd"));
+        store(ST, "t2.xml", fixture("trade-1.xml"));
+        assertTyped("/db/st/t1.xml");
+        assertTyped("/db/st/t2.xml");
+    }
+
+    @Test
+    void unassignableNodesDoNotAbortReindexAndUpdatesAreRejected() throws Exception {
+        configure(XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        store(ST, "bad.xml", fixture("bad.xml"));
+        assertEquals(DocMeta.DocStatus.PARTIAL, docMeta("bad.xml").status());
+
+        configure(XCONF_REJECT);
+        // reindexing is tolerant: the node stays untyped and the document partially typed
+        xquery("xmldb:reindex('/db/st')");
+        assertEquals(DocMeta.DocStatus.PARTIAL, docMeta("bad.xml").status());
+        assertTrue(docMeta("bad.xml").unassignablePaths().stream().anyMatch(p -> p.contains("t:bogus")));
+        assertEquals(DocMeta.DocStatus.TYPED, docMeta("t1.xml").status());
+        assertTyped("/db/st/t1.xml");
+
+        // an update that introduces an unassignable node is rejected and rolled back
+        final Exception e = assertThrows(Exception.class,
+                () -> xquery("update insert <t:bogus xmlns:t='" + T_NS + "'/> into doc('/db/st/t1.xml')/t:trades/t:trade[1]"));
+        assertTrue(messages(e).contains("EXSA0004"), messages(e));
+        assertEquals("0", xquery("count(doc('/db/st/t1.xml')//t:bogus)").itemAt(0).getStringValue());
+        assertEquals(DocMeta.DocStatus.TYPED, docMeta("t1.xml").status());
     }
 
     @Test

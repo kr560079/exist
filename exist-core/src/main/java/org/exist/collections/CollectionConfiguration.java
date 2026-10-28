@@ -164,6 +164,11 @@ public class CollectionConfiguration {
                             broker.pushSubject(asOwner);
                         }
                         try {
+                            if (checkOnly && hasSchemaType(elem)
+                                    && broker.getIndexController().getWorkerByIndexId(TypeAnnotationProvider.INDEX_ID) instanceof TypeAnnotationProvider provider) {
+                                // checking a configuration is strict, unlike loading a stored one
+                                checkSchemaTypeSection(broker, elem, provider, null);
+                            }
                             if (indexSpec == null) {
                                 indexSpec = new IndexSpec(broker, elem);
                             } else {
@@ -282,36 +287,42 @@ public class CollectionConfiguration {
             return;
         }
         final IndexWorker worker = broker.getIndexController().getWorkerByIndexId(TypeAnnotationProvider.INDEX_ID);
-        if (worker == null) {
+        if (!(worker instanceof TypeAnnotationProvider provider)) {
             return;  // the schema-type index module is not enabled
         }
         for (final Element index : childElements(root, INDEX_ELEMENT)) {
-            final List<Element> sections = childElements(index, SCHEMA_TYPE_ELEMENT, "typed-values");
-            if (sections.stream().noneMatch(e -> SCHEMA_TYPE_ELEMENT.equals(e.getLocalName()))) {
-                continue;
-            }
-            final NodeList nodes = new NodeList() {
-                @Override
-                public Node item(final int i) {
-                    return sections.get(i);
-                }
+            checkSchemaTypeSection(broker, index, provider, asOwner);
+        }
+    }
 
-                @Override
-                public int getLength() {
-                    return sections.size();
-                }
-            };
-            if (asOwner != null) {
-                broker.pushSubject(asOwner);
+    /** strictly configure the schema-type section of an {@code index} element, if it has one */
+    private static void checkSchemaTypeSection(final DBBroker broker, final Element index,
+            final TypeAnnotationProvider provider, @Nullable final Subject asOwner) throws CollectionConfigurationException {
+        final List<Element> sections = childElements(index, SCHEMA_TYPE_ELEMENT, "typed-values");
+        if (sections.stream().noneMatch(e -> SCHEMA_TYPE_ELEMENT.equals(e.getLocalName()))) {
+            return;
+        }
+        final NodeList nodes = new NodeList() {
+            @Override
+            public Node item(final int i) {
+                return sections.get(i);
             }
-            try {
-                worker.configure(broker.getIndexController(), nodes, IndexSpec.getNamespaceMap(index));
-            } catch (final DatabaseConfigurationException e) {
-                throw new CollectionConfigurationException(e.getMessage(), e);
-            } finally {
-                if (asOwner != null) {
-                    broker.popSubject();
-                }
+
+            @Override
+            public int getLength() {
+                return sections.size();
+            }
+        };
+        if (asOwner != null) {
+            broker.pushSubject(asOwner);
+        }
+        try {
+            provider.checkConfiguration(broker.getIndexController(), nodes, IndexSpec.getNamespaceMap(index));
+        } catch (final DatabaseConfigurationException e) {
+            throw new CollectionConfigurationException(e.getMessage(), e);
+        } finally {
+            if (asOwner != null) {
+                broker.popSubject();
             }
         }
     }

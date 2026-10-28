@@ -41,7 +41,7 @@ import org.exist.indexing.schematype.TypeIndexStore.Member;
 import org.exist.indexing.schematype.TypeIndexStore.StoredAnnotation;
 import org.exist.numbering.NodeId;
 import org.exist.security.PermissionDeniedException;
-import org.exist.storage.BrokerPool;
+import org.exist.security.Subject;
 import org.exist.storage.DBBroker;
 import org.exist.storage.IndexSpec;
 import org.exist.storage.Indexable;
@@ -54,6 +54,7 @@ import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.QueryRewriter;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.XQueryContext;
+import org.exist.xquery.schema.CompiledSchema;
 import org.exist.xquery.schema.SchemaKey;
 import org.exist.xquery.schema.SchemaLoadException;
 import org.exist.xquery.schema.TypeAnnotation;
@@ -152,6 +153,19 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     @Override
     public Object configure(final IndexController controller, final NodeList configNodes, final Map<String, String> namespaces)
             throws DatabaseConfigurationException {
+        // an existing configuration is being (re)loaded: a schema that cannot be loaded does not unconfigure the collection
+        return configure(configNodes, namespaces, true);
+    }
+
+    @Override
+    public void checkConfiguration(final IndexController controller, final NodeList configNodes, final Map<String, String> namespaces)
+            throws DatabaseConfigurationException {
+        // a configuration is being stored: an unusable schema rejects it
+        configure(configNodes, namespaces, false);
+    }
+
+    private @Nullable Object configure(final NodeList configNodes, final Map<String, String> namespaces, final boolean lenient)
+            throws DatabaseConfigurationException {
         Element schemaTypeEl = null;
         Element typedValuesEl = null;
         for (int i = 0; i < configNodes.getLength(); i++) {
@@ -181,7 +195,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             }
             return null;
         }
-        return SchemaTypeConfig.parse(broker, schemaTypeEl, typedValuesEl, namespaces);
+        return SchemaTypeConfig.parse(broker, schemaTypeEl, typedValuesEl, namespaces, lenient);
     }
 
     // --- lifecycle ---
@@ -302,7 +316,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     SchemaTypeStreamListener.Seed seedFor(final IStoredNode<?> root) {
         try {
             final IStoredNode parent = root.getParentStoredNode();
-            if (!(parent instanceof ElementImpl element) || config == null) {
+            if (!(parent instanceof ElementImpl element) || config == null || config.schema() == null) {
                 return SchemaTypeStreamListener.Seed.UNANNOTATED;
             }
             final StoredAnnotation annotation = index.store().getAnnotation(document.getDocId(), element.getNodeId());
@@ -560,6 +574,30 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
 
     // --- TypeAnnotationProvider ---
 
+    /**
+     * The configuration of a collection was stored with a schema whose key differs from the one its documents were
+     * indexed with: with {@code reindex-on-schema-change} reindex it now, in the storing user's transaction (who
+     * has write access to the configuration, hence to the setup of the collection).
+     */
+    @Override
+    public void configurationStored(final DBBroker broker, final Txn txn, final XmldbURI dataCollectionUri) {
+        try {
+            final Collection collection = broker.getCollection(dataCollectionUri);
+            final SchemaTypeConfig cfg = configOf(collection);
+            if (cfg == null || !cfg.reindexOnSchemaChange() || cfg.schema() == null) {
+                return;
+            }
+            final CollectionMeta meta = index.store().getCollectionMeta(collection.getId());
+            if (meta == null || meta.schema().equals(cfg.schema().key())) {
+                return;
+            }
+            LOG.info("The schema of collection {} changed: reindexing it", dataCollectionUri);
+            broker.reindexCollection(txn, dataCollectionUri);
+        } catch (final Exception e) {
+            LOG.error("Error reindexing collection {} after its configuration changed: {}", dataCollectionUri, e.getMessage(), e);
+        }
+    }
+
     @Override
     public @Nullable StoreCheck storeCheck(final Collection collection, final XmldbURI name) {
         final SchemaTypeConfig cfg = configOf(collection);
@@ -617,6 +655,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 if (cfg == null) {
                     continue;
                 }
+                ensureAvailable(collection, cfg);
                 final short[] localTypeIds = index.table(collection.getId(), cfg.schema()).matching(typeCode, includeDerived);
                 // local type ids are per collection: query the documents of this collection only
                 final DefaultDocumentSet collectionDocs = new DefaultDocumentSet();
@@ -657,6 +696,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         if (cfg == null) {
             return null;
         }
+        ensureAvailable(doc.getCollection(), cfg);
         try {
             final DocMeta meta = index.store().getDocMeta(doc.getDocId());
             return meta != null ? meta.indexedWith() : cfg.schema().key();
@@ -680,7 +720,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     void verifySchemaAvailable(final Collection collection, final SchemaTypeConfig cfg) {
         final int collectionId = collection.getId();
         try {
-            broker.getBrokerPool().getSchemaRegistry().load(broker, cfg.href(), cfg.allowRemote());
+            cfg.recover(loadSchema(cfg));
             index.markAvailable(collectionId);
         } catch (final SchemaLoadException e) {
             final String message = "the schema " + cfg.href() + " of collection " + collection.getURI()
@@ -692,6 +732,40 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
     }
 
+    /** load the configured schema (from the registry's memo unless a schema document changed) as the owner of the configuration */
+    private CompiledSchema loadSchema(final SchemaTypeConfig cfg) throws SchemaLoadException {
+        final Subject owner = cfg.loadAs();
+        if (owner != null) {
+            broker.pushSubject(owner);
+        }
+        try {
+            return broker.getBrokerPool().getSchemaRegistry().load(broker, cfg.href(), cfg.allowRemote());
+        } finally {
+            if (owner != null) {
+                broker.popSubject();
+            }
+        }
+    }
+
+    /**
+     * Raise {@code EXSA0002} if the collection's schema is unavailable, trying to load it again.
+     */
+    private void ensureAvailable(final Collection collection, final SchemaTypeConfig cfg) throws XPathException {
+        final int collectionId = collection.getId();
+        if (cfg.schema() != null && !(index.hasUnavailable() && index.unavailableReason(collectionId) != null)) {
+            return;
+        }
+        try {
+            cfg.recover(loadSchema(cfg));
+            index.markAvailable(collectionId);
+        } catch (final SchemaLoadException e) {
+            final String reason = index.unavailableReason(collectionId);
+            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0002, reason != null ? reason
+                    : cfg.unavailableReason() != null ? cfg.unavailableReason()
+                    : "the schema " + cfg.href() + " of collection " + collection.getURI() + " is unavailable: " + e.getMessage());
+        }
+    }
+
     /**
      * Raise {@code EXSA0002} if the schema of the document's collection is unavailable and {@code EXSA0003} if the
      * document was not indexed with the collection's current schema (or not at all). With
@@ -700,35 +774,20 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
      * <p>The common case costs a map lookup and a key comparison against a cached {@link DocMeta}.</p>
      */
     private void ensureUsable(final DocumentImpl doc, final SchemaTypeConfig cfg) throws XPathException {
-        final int collectionId = doc.getCollection().getId();
-        if (index.hasUnavailable()) {
-            final String message = index.unavailableReason(collectionId);
-            if (message != null) {
-                // the schema may be back: look again before failing the query
-                try {
-                    broker.getBrokerPool().getSchemaRegistry().load(broker, cfg.href(), cfg.allowRemote());
-                    index.markAvailable(collectionId);
-                } catch (final SchemaLoadException e) {
-                    throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0002, message);
-                }
-            }
-        }
+        ensureAvailable(doc.getCollection(), cfg);
         try {
             final SchemaKey current = cfg.schema().key();
             if (!isStale(doc, current)) {
                 return;
             }
             if (cfg.reindexOnSchemaChange()) {
-                reindexIfStale(doc, current);
-                if (!isStale(doc, current)) {
-                    return;
-                }
+                index.scheduleReindex(doc.getCollection(), current, cfg.loadAs());
             }
             final DocMeta meta = docMeta(doc.getDocId());
             throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0003, "The schema type index of "
                     + doc.getURI() + (meta == null ? " has no entries for the document, which was stored before the collection was configured"
                     : " was built with schema " + meta.indexedWith().sha256() + " but the collection now uses " + current.sha256())
-                    + "; reindex the collection");
+                    + (cfg.reindexOnSchemaChange() ? "; a reindex of the collection is scheduled, retry shortly" : "; reindex the collection"));
         } catch (final IOException e) {
             throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
@@ -750,26 +809,6 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         final DocMeta meta = store.getDocMeta(docId);
         metaCache.put(docId, new CachedMeta(generation, meta));
         return meta;
-    }
-
-    private void reindexIfStale(final DocumentImpl doc, final SchemaKey current) throws IOException {
-        final Collection collection = doc.getCollection();
-        synchronized (index.reindexLock()) {
-            if (!isStale(doc, current)) {
-                return;     // another query did it
-            }
-            LOG.info("The schema of collection {} changed: reindexing it", collection.getURI());
-            final BrokerPool pool = broker.getBrokerPool();
-            broker.pushSubject(pool.getSecurityManager().getSystemSubject());
-            try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-                broker.reindexCollection(txn, collection.getURI());
-                txn.commit();
-            } catch (final Exception e) {
-                LOG.error("Error reindexing collection {} after a schema change: {}", collection.getURI(), e.getMessage(), e);
-            } finally {
-                broker.popSubject();
-            }
-        }
     }
 
     // --- helpers ---

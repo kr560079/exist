@@ -315,8 +315,10 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
 
     /** with {@code on-unassignable="reject"} an unassignable node fails the store (EXSA0004) */
     private void rejectIfRequired(final TypeAssigner.Assignment assignment) {
+        // Stores are checked before they are written and reindexing (a full pass) never rejects: the node is left
+        // untyped and the document flagged partially typed. Only changes to a stored document (a seeded pass) are rejected.
         if (assignment.status() == TypeAssigner.Status.UNASSIGNABLE && config != null
-                && config.onUnassignable() == OnUnassignable.REJECT) {
+                && config.onUnassignable() == OnUnassignable.REJECT && kind == PassKind.SEEDED) {
             final String path = assignment.path();
             final String reason = assignment.reason();
             final String uri = worker.getDocument() == null ? "" : " in " + worker.getDocument().getURI();

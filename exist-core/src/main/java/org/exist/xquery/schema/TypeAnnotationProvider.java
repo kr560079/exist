@@ -26,14 +26,19 @@ import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.DocumentSet;
 import org.exist.dom.persistent.NodeProxy;
 import org.exist.dom.persistent.NodeSet;
+import org.exist.indexing.IndexController;
 import org.exist.indexing.IndexWorker;
 import org.exist.storage.DBBroker;
+import org.exist.storage.txn.Txn;
+import org.exist.util.DatabaseConfigurationException;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.XPathException;
+import org.w3c.dom.NodeList;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.ext.LexicalHandler;
 
 import javax.annotation.Nullable;
+import java.util.Map;
 
 /**
  * Supplies the type annotations of stored nodes. Implemented by the index worker of the schema type index.
@@ -92,6 +97,30 @@ public interface TypeAnnotationProvider {
      */
     default @Nullable StoreCheck storeCheck(final Collection collection, final XmldbURI name) {
         return null;
+    }
+
+    /**
+     * Check the schema-type sections of a collection configuration that is being stored: unlike when a stored
+     * configuration is loaded, an unusable schema rejects them.
+     *
+     * @param controller  the index controller
+     * @param configNodes the {@code schema-type} and {@code typed-values} elements of an {@code index} element
+     * @param namespaces  the namespaces in scope
+     * @throws DatabaseConfigurationException if the configuration is unusable
+     */
+    default void checkConfiguration(final IndexController controller, final NodeList configNodes, final Map<String, String> namespaces)
+            throws DatabaseConfigurationException {
+    }
+
+    /**
+     * Called after a collection configuration document was stored and loaded, in the store's transaction: a
+     * collection configured with {@code reindex-on-schema-change} whose schema key changed is reindexed.
+     *
+     * @param broker               the broker of the storing user
+     * @param txn                  the store's transaction
+     * @param dataCollectionUri    the collection the configuration applies to
+     */
+    default void configurationStored(final DBBroker broker, final Txn txn, final XmldbURI dataCollectionUri) {
     }
 
     /**

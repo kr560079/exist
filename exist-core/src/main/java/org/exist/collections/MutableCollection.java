@@ -1435,6 +1435,10 @@ public class MutableCollection implements Collection {
                 try {
                     manager.invalidate(getURI(), broker.getBrokerPool());
                     manager.loadConfiguration(broker, this);
+                    final org.exist.xquery.schema.TypeAnnotationProvider provider = org.exist.xquery.schema.TypeAnnotationProvider.of(broker);
+                    if (provider != null) {
+                        provider.configurationStored(broker, transaction, getURI().trimFromBeginning(XmldbURI.CONFIG_COLLECTION_URI));
+                    }
                 } catch(final PermissionDeniedException | LockException pde) {
                     throw new EXistException(pde.getMessage(), pde);
                 } catch(final CollectionConfigurationException e) {
