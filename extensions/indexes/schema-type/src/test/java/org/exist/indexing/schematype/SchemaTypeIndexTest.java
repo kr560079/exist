@@ -181,7 +181,11 @@ public class SchemaTypeIndexTest {
     void reindexCollectionRebuilds() throws Exception {
         final DocumentImpl t1 = doc(ST, "t1.xml");
         index().store().removeDocument(t1.getDocId());
-        assertEquals(TypeAnnotation.ANY_TYPE, annotationOf("/t:trade/t:notional/t:amount"));
+        // a document of a configured collection without entries is stale (EXSA0003)
+        final NodeProxy staleAmount = node("/db/st/t1.xml", "/t:trade/t:notional/t:amount");
+        final org.exist.xquery.XPathException stale = assertThrows(org.exist.xquery.XPathException.class,
+                () -> provider().annotationOf(staleAmount));
+        assertTrue(stale.getMessage().contains("EXSA0003") || stale.getErrorCode().getErrorQName().getLocalPart().equals("EXSA0003"));
 
         query("xmldb:reindex('/db/st')");
 

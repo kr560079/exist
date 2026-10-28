@@ -38,6 +38,7 @@ import org.exist.xquery.schema.CompiledSchema;
 import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.w3c.dom.Element;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Path;
@@ -81,6 +82,9 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     private final Object tableLock = new Object();
     /** the ids of the collections with metadata, i.e. with entries; lets unconfigured collections skip all I/O */
     private final Set<Integer> collectionsWithMeta = ConcurrentHashMap.newKeySet();
+    /** collections whose schema failed to load, with the reason: a store failed with EXSA0002 */
+    private final ConcurrentHashMap<Integer, String> unavailable = new ConcurrentHashMap<>();
+    private final Object reindexLock = new Object();
     /** unstable type ids already reported */
     private final Set<String> reportedUnstable = ConcurrentHashMap.newKeySet();
 
@@ -118,6 +122,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             db.close();
         }
         tables.clear();
+        unavailable.clear();
         collectionsWithMeta.clear();
     }
 
@@ -134,6 +139,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             db.closeAndRemove();
         }
         tables.clear();
+        unavailable.clear();
         collectionsWithMeta.clear();
     }
 
@@ -231,6 +237,32 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
      */
     boolean hasMeta(final int collectionId) {
         return collectionsWithMeta.contains(collectionId);
+    }
+
+    void markAvailable(final int collectionId) {
+        if (!unavailable.isEmpty()) {
+            unavailable.remove(collectionId);
+        }
+    }
+
+    /**
+     * @return true if the collection was not marked before (so the failure is logged once)
+     */
+    boolean markUnavailable(final int collectionId, final String reason) {
+        return unavailable.put(collectionId, reason) == null;
+    }
+
+    boolean hasUnavailable() {
+        return !unavailable.isEmpty();
+    }
+
+    @Nullable String unavailableReason(final int collectionId) {
+        return unavailable.get(collectionId);
+    }
+
+    /** serializes automatic reindexes after a schema change */
+    Object reindexLock() {
+        return reindexLock;
     }
 
     /**

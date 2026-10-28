@@ -31,6 +31,7 @@ import org.exist.indexing.IndexWorker;
 import org.exist.numbering.NodeId;
 import org.exist.storage.NodePath;
 import org.exist.storage.txn.Txn;
+import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.schema.ValueChecker;
 import org.w3c.dom.Node;
 
@@ -196,6 +197,7 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                     final TypeAssigner.Assignment a = assigner.assignAttribute(seed.parentType(), seed.parentPath(),
                             attrib.getNodeId(), attrib.getQName(), attrib.getValue());
                     if (a != null) {
+                        rejectIfRequired(a);
                         pending.add(new Pending(a, collectValues ? attrib.getValue() : null));
                     }
                     rootEnded = true;
@@ -264,6 +266,7 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         if (cfg == null) {
             return false;
         }
+        worker.verifySchemaAvailable(cfg);
         kind = passKind;
         docId = worker.getDocument().getDocId();
         config = cfg;
@@ -292,6 +295,7 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
 
     private void drain(@Nullable final NodeId endedElement, @Nullable final String endedText) {
         for (final TypeAssigner.Assignment assignment : assigner.drain()) {
+            rejectIfRequired(assignment);
             String lexical = null;
             if (collectValues && assignment.status() == TypeAssigner.Status.ANNOTATED) {
                 if (assignment.nodeKind() == Node.ATTRIBUTE_NODE) {
@@ -306,6 +310,19 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                 }
             }
             pending.add(new Pending(assignment, lexical));
+        }
+    }
+
+    /** with {@code on-unassignable="reject"} an unassignable node fails the store (EXSA0004) */
+    private void rejectIfRequired(final TypeAssigner.Assignment assignment) {
+        if (assignment.status() == TypeAssigner.Status.UNASSIGNABLE && config != null
+                && config.onUnassignable() == OnUnassignable.REJECT) {
+            final String path = assignment.path();
+            final String reason = assignment.reason();
+            final String uri = worker.getDocument() == null ? "" : " in " + worker.getDocument().getURI();
+            reset();
+            throw new SchemaTypeException(ErrorCodes.EXSA0004, "node " + path + uri + " cannot be assigned a type: "
+                    + (reason == null ? "unknown reason" : reason));
         }
     }
 

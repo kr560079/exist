@@ -21,13 +21,17 @@
  */
 package org.exist.xquery.schema;
 
+import org.exist.collections.Collection;
 import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.DocumentSet;
 import org.exist.dom.persistent.NodeProxy;
 import org.exist.dom.persistent.NodeSet;
 import org.exist.indexing.IndexWorker;
 import org.exist.storage.DBBroker;
+import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.XPathException;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.ext.LexicalHandler;
 
 import javax.annotation.Nullable;
 
@@ -71,6 +75,24 @@ public interface TypeAnnotationProvider {
      * @throws XPathException {@code EXSA0002} if the schema is unavailable
      */
     @Nullable SchemaKey schemaOf(DocumentImpl doc) throws XPathException;
+
+    /**
+     * A check of a document about to be stored, fed with its SAX events before anything is written. It vetoes the
+     * store by throwing a {@link org.xml.sax.SAXException}.
+     */
+    interface StoreCheck extends ContentHandler, LexicalHandler {
+    }
+
+    /**
+     * Get the check of a document about to be stored into a collection.
+     *
+     * @param collection the collection the document is stored into
+     * @param name       the name of the document
+     * @return the check, or null if the collection has no schema (nothing is then done for the store)
+     */
+    default @Nullable StoreCheck storeCheck(final Collection collection, final XmldbURI name) {
+        return null;
+    }
 
     /**
      * Get the provider of a broker.

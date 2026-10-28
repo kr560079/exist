@@ -1601,13 +1601,23 @@ public class MutableCollection implements Collection {
                 final boolean isConfigDoc = getURI().startsWith(XmldbURI.CONFIG_COLLECTION_URI)
                         && name.endsWith(CollectionConfiguration.COLLECTION_CONFIG_SUFFIX_URI);
                 final org.exist.dom.memtree.SAXAdapter configTap = isConfigDoc ? new org.exist.dom.memtree.SAXAdapter((org.exist.xquery.Expression) null) : null;
+                // other documents: a collection with a schema type configuration checks them before anything is written
+                final org.exist.xquery.schema.TypeAnnotationProvider.StoreCheck storeCheck;
+                if (configTap == null) {
+                    final org.exist.xquery.schema.TypeAnnotationProvider provider = org.exist.xquery.schema.TypeAnnotationProvider.of(broker);
+                    storeCheck = provider == null ? null : provider.storeCheck(this, name);
+                } else {
+                    storeCheck = null;
+                }
                 if (configTap != null) {
                     info.setTap(configTap);
+                } else if (storeCheck != null) {
+                    info.setTap(storeCheck);
                 }
                 try {
                     validator.accept(info);
                 } finally {
-                    if (configTap != null) {
+                    if (configTap != null || storeCheck != null) {
                         info.setTap(null);
                     }
                 }
