@@ -41,6 +41,9 @@ public final class UserTypeRegistry {
     private static final Map<String, Integer> CODES = new ConcurrentHashMap<>();
     private static final Map<Integer, UserDefinedType> TYPES = new ConcurrentHashMap<>();
 
+    /** set once the first type is registered; lets hot paths skip user-type handling entirely */
+    private static volatile boolean anyRegistered = false;
+
     private UserTypeRegistry() {
     }
 
@@ -67,12 +70,23 @@ public final class UserTypeRegistry {
             final UserDefinedType type = factory.apply(code);
             TYPES.put(code, type);
             CODES.put(key, code);
+            anyRegistered = true;
             return code;
         }
     }
 
     public static @Nullable UserDefinedType get(final int code) {
         return code < USER_TYPE_BASE ? null : TYPES.get(code);
+    }
+
+    /**
+     * Test whether any user-defined type was ever registered. If not, no value of a user-defined
+     * type can exist.
+     *
+     * @return true if a type was registered
+     */
+    public static boolean hasUserTypes() {
+        return anyRegistered;
     }
 
     public static boolean isUserType(final int code) {

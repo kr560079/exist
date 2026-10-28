@@ -51,6 +51,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class TypedValuesTest {
 
     private static final String NS = "urn:example:trade";
+    private static final String TV_NS = "urn:example:typed-values";
 
     @RegisterExtension
     static final ExistEmbeddedServer existEmbeddedServer = new ExistEmbeddedServer(true, true);
@@ -204,6 +205,45 @@ public class TypedValuesTest {
             assertEquals(1, result.getItemCount(), expr);
             assertEquals(BooleanValue.TRUE, result.itemAt(0), expr);
         }
+    }
+
+    @Test
+    public void unaryMinusOnOneItemSequenceOfUserType() throws Exception {
+        final String prolog = "declare variable $v external; ";
+        for (final String expr : new String[]{"-(for $x in $v return $x)", "-(($v, 1)[1])", "+(for $x in $v return $x)"}) {
+            final Sequence result = evalWithUserValue(prolog + expr);
+            assertEquals(Type.DECIMAL, typeOf(result), expr);
+        }
+        assertEquals("-5", evalWithUserValue(prolog + "-(for $x in $v return $x)").getStringValue());
+    }
+
+    @Test
+    public void groupByMergesUserDateTimeWithEqualDateTime() throws Exception {
+        final CompiledSchema tv = CompiledSchema.compile(new SchemaKey("typed-values-test-2"),
+                CompiledSchemaTest.loadModel("typed-values.xsd"));
+        final int timestamp = tv.typeCode(tv.namedType(new QName("Timestamp", TV_NS)).orElseThrow());
+        final AtomicValue v = (AtomicValue) TypedValues.fromLexical("2026-01-01T00:00:00", timestamp, null).itemAt(0);
+        assertEquals(timestamp, v.getType());
+        final Sequence result = eval("declare variable $v external; "
+                + "count(for $x in ($v, xs:dateTime('2026-01-01T00:00:00'), xs:dateTime('2026-01-01T00:00:00')) group by $k := $x return $k)", v);
+        assertEquals("1", result.getStringValue());
+    }
+
+    @Test
+    public void groupByMergesUserStringWithCollationEqualString() throws Exception {
+        final CompiledSchema tv = CompiledSchema.compile(new SchemaKey("typed-values-test-3"),
+                CompiledSchemaTest.loadModel("typed-values.xsd"));
+        final int label = tv.typeCode(tv.namedType(new QName("Label", TV_NS)).orElseThrow());
+        final AtomicValue v = (AtomicValue) TypedValues.fromLexical("abc", label, null).itemAt(0);
+        assertEquals(label, v.getType());
+        final Sequence result = eval("declare variable $v external; "
+                + "count(for $x in ($v, 'ABC') group by $k := $x "
+                + "collation 'http://www.w3.org/2013/collation/UCA?strength=primary' return $k)", v);
+        assertEquals("1", result.getStringValue());
+        // a token-based user type groups with an equal plain xs:token
+        final AtomicValue usd = (AtomicValue) TypedValues.fromLexical("USD", currency, null).itemAt(0);
+        assertEquals("1", eval("declare variable $v external; "
+                + "count(for $x in ($v, xs:token('USD')) group by $k := $x return $k)", usd).getStringValue());
     }
 
     private static Sequence evalWithUserValue(final String query)

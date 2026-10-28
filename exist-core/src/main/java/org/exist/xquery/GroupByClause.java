@@ -325,7 +325,11 @@ public class GroupByClause extends AbstractFLWORClause {
 
             final int c = s.getItemCount();
             for (int i = 0; i < c; i++) {
-                final Item v = s.itemAt(i);
+                Item v = s.itemAt(i);
+                if (v instanceof AtomicValue atomic) {
+                    // keys of user-defined (schema) types hash as values of their built-in base type
+                    v = atomic.unwrapUserType();
+                }
 
                 final Collator collator = groupSpecs[i].getCollator();
 

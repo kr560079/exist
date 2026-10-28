@@ -27,6 +27,7 @@ import org.exist.xquery.value.SequenceIterator;
 import org.exist.xquery.value.SequenceType;
 import org.exist.xquery.value.Type;
 import org.exist.xquery.value.UserDefinedAtomicValue;
+import org.exist.xquery.value.UserTypeRegistry;
 import org.exist.xquery.value.ValueSequence;
 import org.exist.xquery.util.ExpressionDumper;
 
@@ -37,6 +38,10 @@ import org.exist.xquery.util.ExpressionDumper;
  * @author <a href="mailto:wolfgang@exist-db.org">Wolfgang Meier</a>
  */
 public abstract class BasicFunction extends Function {
+
+    /** per-argument flags: unwrap values of user-defined types; computed lazily by {@link #unwrapArgument(int)} */
+    private boolean[] unwrapArgs = null;
+    private FunctionSignature unwrapArgsSignature = null;
 
     public BasicFunction(final XQueryContext context, final FunctionSignature signature) {
         super(context, signature);
@@ -97,7 +102,7 @@ public abstract class BasicFunction extends Function {
      * @throws XPathException if the argument cannot be iterated
      */
     private Sequence unwrapUserTypes(final int argIndex, final Sequence arg) throws XPathException {
-        if (arg.isEmpty() || !hasBuiltInAtomicParameterType(argIndex)) {
+        if (!UserTypeRegistry.hasUserTypes() || !unwrapArgument(argIndex) || arg.isEmpty()) {
             return arg;
         }
         if (arg.hasOne()) {
@@ -120,6 +125,23 @@ public abstract class BasicFunction extends Function {
             unwrapped.add(item instanceof UserDefinedAtomicValue userValue ? userValue.unwrapUserType() : item);
         }
         return unwrapped;
+    }
+
+    /**
+     * Whether the argument at a position is unwrapped; computed once per signature and argument count.
+     */
+    private boolean unwrapArgument(final int argIndex) {
+        boolean[] flags = unwrapArgs;
+        final int argCount = getArgumentCount();
+        if (flags == null || flags.length != argCount || unwrapArgsSignature != getSignature()) {
+            flags = new boolean[argCount];
+            for (int i = 0; i < argCount; i++) {
+                flags[i] = hasBuiltInAtomicParameterType(i);
+            }
+            unwrapArgsSignature = getSignature();
+            unwrapArgs = flags;
+        }
+        return argIndex < flags.length && flags[argIndex];
     }
 
     private boolean hasBuiltInAtomicParameterType(final int argIndex) {
