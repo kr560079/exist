@@ -87,4 +87,42 @@ public class UserTypeRegistryTest {
         assertFalse(UserTypeRegistry.isUserType(Type.INT));
         assertNull(UserTypeRegistry.get(Type.INT));
     }
+
+    private static int registerUnion(final SchemaKey key, final String name, final int... members) {
+        return UserTypeRegistry.register(key, "{urn:t}" + name, code -> new UserDefinedType(code,
+                new QName(name, "urn:t"), null, Type.ANY_ATOMIC_TYPE, 0, Variety.UNION, key, null, members));
+    }
+
+    @Test
+    void userUnionSemantics() {
+        final int u = registerUnion(K1, "DecOrStr", Type.DECIMAL, Type.STRING);
+        assertTrue(Type.subTypeOf(Type.INT, u));
+        assertTrue(Type.subTypeOf(Type.STRING, u));
+        assertFalse(Type.subTypeOf(Type.BOOLEAN, u));
+        assertTrue(Type.subTypeOf(u, Type.ANY_ATOMIC_TYPE));
+        assertTrue(Type.hasMember(u, Type.DECIMAL));
+        assertFalse(Type.hasMember(u, Type.INT));
+        assertTrue(Type.subTypeOfUnion(Type.INT, u));
+        assertTrue(Type.subTypeOfUnion(u, u));
+        assertFalse(Type.subTypeOfUnion(Type.BOOLEAN, u));
+    }
+
+    @Test
+    void nonUnionUserSuperRejectsBuiltIn() {
+        final int nnd = registerAtomic(K1, "NonNegativeDecimal", Type.DECIMAL);
+        assertFalse(Type.subTypeOf(Type.INT, nnd));
+        assertFalse(Type.subTypeOfUnion(Type.INT, nnd));
+        assertFalse(Type.hasMember(nnd, Type.DECIMAL));
+    }
+
+    @Test
+    void userListKeepsItemTypeInMemberCodes() {
+        final int item = registerAtomic(K1, "ListItem", Type.INT);
+        final int list = UserTypeRegistry.register(K1, "{urn:t}IntList", code -> new UserDefinedType(code,
+                new QName("IntList", "urn:t"), null, Type.ANY_ATOMIC_TYPE, 0, Variety.LIST, K1, null, new int[]{item}));
+        assertArrayEquals(new int[]{item}, UserTypeRegistry.get(list).memberCodes());
+        assertEquals(Variety.LIST, UserTypeRegistry.get(list).variety());
+        assertFalse(Type.hasMember(list, item));
+        assertFalse(Type.subTypeOf(Type.INT, list));
+    }
 }
