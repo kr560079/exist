@@ -203,6 +203,32 @@ public final class CompiledSchema {
     }
 
     /**
+     * Look up a type definition by the stable id under which its code is registered with
+     * {@link UserTypeRegistry}: {@code {ns}local} for named types (including the XML Schema built-in
+     * types), {@code #anon:<declaration path>} for anonymous types reachable from a global component.
+     *
+     * @param typeId the type id
+     * @return the type definition, or empty if this schema defines no type with that id
+     */
+    public Optional<XSTypeDefinition> typeById(final String typeId) {
+        if (typeId.startsWith("{")) {
+            final int close = typeId.indexOf('}');
+            if (close < 0) {
+                return Optional.empty();
+            }
+            return namedType(new QName(typeId.substring(close + 1), typeId.substring(1, close)));
+        }
+        if (typeId.startsWith(ANON_PREFIX)) {
+            for (final Map.Entry<XSTypeDefinition, String> entry : anonymousIds.entrySet()) {
+                if (entry.getValue().equals(typeId)) {
+                    return Optional.of(entry.getKey());
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
      * Resolve a child element against the content model of its parent's type.
      *
      * <p>Element particles match by name, global element particles also by the members of their substitution
