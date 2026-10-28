@@ -51,6 +51,7 @@ public class IndexInfo {
     private final CollectionConfiguration collectionConfig;
     private final ManagedDocumentLock documentLock;
 
+    private ContentHandler tap;
     private DOMStreamer streamer;
     private DocumentTriggers docTriggers;
     private boolean creating = false;
@@ -108,7 +109,31 @@ public class IndexInfo {
      * the same indexing/trigger pipeline through a SAX-driven validation pass.
      */
     ContentHandler getContentHandler() {
-        return docTriggers == null ? indexer : docTriggers;
+        final ContentHandler base = docTriggers == null ? indexer : docTriggers;
+        return tap == null ? base : tee(base);
+    }
+
+    /**
+     * Also sends the SAX events of the document being validated to {@code tapHandler} (or stops doing so
+     * if null), so that the content is available before anything is written.
+     */
+    <T extends ContentHandler & LexicalHandler> void setTap(final T tapHandler) {
+        this.tap = tapHandler;
+    }
+
+    private ContentHandler tee(final ContentHandler base) {
+        final Object primary = base;
+        final Object secondary = tap;
+        return (ContentHandler) java.lang.reflect.Proxy.newProxyInstance(IndexInfo.class.getClassLoader(),
+                new Class<?>[] {ContentHandler.class, LexicalHandler.class}, (proxy, method, args) -> {
+                    try {
+                        final Object result = method.invoke(primary, args);
+                        method.invoke(secondary, args);
+                        return result;
+                    } catch (final java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
     }
 
     /**
@@ -117,18 +142,13 @@ public class IndexInfo {
      * separately.
      */
     LexicalHandler getLexicalHandler() {
-        return docTriggers == null ? indexer : docTriggers;
+        return tap == null ? (docTriggers == null ? indexer : docTriggers) : (LexicalHandler) getContentHandler();
     }
 
     void setDOMStreamer(final DOMStreamer streamer) {
         this.streamer = streamer;
-        if (docTriggers == null) {
-            streamer.setContentHandler(indexer);
-            streamer.setLexicalHandler(indexer);
-        } else {
-            streamer.setContentHandler(docTriggers);
-            streamer.setLexicalHandler(docTriggers);
-        }
+        streamer.setContentHandler(getContentHandler());
+        streamer.setLexicalHandler(getLexicalHandler());
     }
 
     public DOMStreamer getDOMStreamer() {

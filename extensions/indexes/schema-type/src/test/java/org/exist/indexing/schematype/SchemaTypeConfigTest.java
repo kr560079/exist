@@ -126,8 +126,8 @@ public class SchemaTypeConfigTest {
 
     private String currentXconfHref() throws Exception {
         final Collection col = broker.getCollection(XmldbURI.create("/db/test-schema-type"));
-        final Object spec = col.getConfiguration(broker)
-                .getIndexConfiguration().getCustomIndexSpec(SchemaTypeIndex.ID);
+        final var indexSpec = col.getConfiguration(broker).getIndexConfiguration();
+        final Object spec = indexSpec == null ? null : indexSpec.getCustomIndexSpec(SchemaTypeIndex.ID);
         return spec == null ? null : ((SchemaTypeConfig) spec).href();
     }
 
@@ -256,6 +256,32 @@ public class SchemaTypeConfigTest {
                 () -> storeXconf(broker, xconf("href='" + missing + "'", null)));
         assertTrue(e.getMessage().contains("absent.xsd"), e.getMessage());
         assertEquals(HREF, currentXconfHref(), "the rejected store must not change the effective configuration");
+
+        // the stored document is untouched ...
+        assertEquals(HREF, storedXconfHref());
+
+        // ... so even after the cached configuration is dropped and re-read from storage the old config is in effect
+        org.exist.collections.ConfigReloader.reloadFromStorage(broker, CONF_COL);
+        assertEquals(HREF, currentXconfHref());
+    }
+
+    @Test
+    void rejectedCreateLeavesNoXconfBehind() throws Exception {
+        final String missing = "xmldb:exist:///db/test-schema-type/absent.xsd";
+        assertThrows(EXistException.class, () -> storeXconf(broker, xconf("href='" + missing + "'", null)));
+        try (final var locked = broker.getXMLResource(CONF_COL.append(CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE_URI),
+                org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+            assertNull(locked, "no xconf document may exist after a rejected create");
+        }
+        assertNull(currentXconfHref());
+    }
+
+    private String storedXconfHref() throws Exception {
+        try (final var locked = broker.getXMLResource(CONF_COL.append(CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE_URI),
+                org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+            assertNotNull(locked);
+            return ((Element) locked.getDocument().getDocumentElement().getFirstChild().getFirstChild()).getAttribute("href");
+        }
     }
 
     @Test

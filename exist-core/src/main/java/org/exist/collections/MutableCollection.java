@@ -1433,8 +1433,6 @@ public class MutableCollection implements Collection {
             final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
             if(manager != null) {
                 try {
-                    // reject the store, before the cached configuration is touched, if a schema-type section is unusable
-                    CollectionConfiguration.checkSchemaTypeSections(broker, document);
                     manager.invalidate(getURI(), broker.getBrokerPool());
                     manager.loadConfiguration(broker, this);
                 } catch(final PermissionDeniedException | LockException pde) {
@@ -1600,7 +1598,29 @@ public class MutableCollection implements Collection {
                     LOG.debug("Scanning document {}", getURI().append(name));
                 }
 
-                validator.accept(info);
+                final boolean isConfigDoc = getURI().startsWith(XmldbURI.CONFIG_COLLECTION_URI)
+                        && name.endsWith(CollectionConfiguration.COLLECTION_CONFIG_SUFFIX_URI);
+                final org.exist.dom.memtree.SAXAdapter configTap = isConfigDoc ? new org.exist.dom.memtree.SAXAdapter((org.exist.xquery.Expression) null) : null;
+                if (configTap != null) {
+                    info.setTap(configTap);
+                }
+                try {
+                    validator.accept(info);
+                } finally {
+                    if (configTap != null) {
+                        info.setTap(null);
+                    }
+                }
+                if (configTap != null) {
+                    // Nothing has been written yet: an unusable schema-type section vetoes the store
+                    // here, leaving any existing configuration document (and the live configuration) as is.
+                    try {
+                        CollectionConfiguration.checkSchemaTypeSections(broker, configTap.getDocument(),
+                                oldDoc != null ? oldDoc.getPermissions().getOwner() : broker.getCurrentSubject());
+                    } catch (final CollectionConfigurationException e) {
+                        throw new EXistException("Error while reading new collection configuration: " + e.getMessage(), e);
+                    }
+                }
                 // new document is valid: remove old document
                 if (oldDoc != null) {
                     if (LOG.isDebugEnabled()) {

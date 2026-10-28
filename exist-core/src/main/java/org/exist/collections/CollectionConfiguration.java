@@ -236,8 +236,11 @@ public class CollectionConfiguration {
         if (!(doc instanceof DocumentImpl stored)) {
             return null;
         }
+        return subjectFor(broker, stored.getPermissions().getOwner());
+    }
+
+    private static @Nullable Subject subjectFor(final DBBroker broker, @Nullable final Account owner) {
         final org.exist.security.SecurityManager sm = broker.getBrokerPool().getSecurityManager();
-        final Account owner = stored.getPermissions().getOwner();
         if (owner == null) {
             return null;
         }
@@ -261,6 +264,19 @@ public class CollectionConfiguration {
      * @throws CollectionConfigurationException if a schema-type section is invalid
      */
     public static void checkSchemaTypeSections(final DBBroker broker, final Document doc) throws CollectionConfigurationException {
+        checkSchemaTypeSections(broker, doc, ownerSubject(broker, doc));
+    }
+
+    /**
+     * As {@link #checkSchemaTypeSections(DBBroker, Document)}, for a document that is not stored yet.
+     *
+     * @param owner the account that will own the stored document: the schema is read with its permissions
+     */
+    public static void checkSchemaTypeSections(final DBBroker broker, final Document doc, @Nullable final Account owner) throws CollectionConfigurationException {
+        checkSchemaTypeSections(broker, doc, subjectFor(broker, owner));
+    }
+
+    private static void checkSchemaTypeSections(final DBBroker broker, final Document doc, @Nullable final Subject asOwner) throws CollectionConfigurationException {
         final Element root = doc.getDocumentElement();
         if (root == null || !NAMESPACE.equals(root.getNamespaceURI())) {
             return;
@@ -285,7 +301,6 @@ public class CollectionConfiguration {
                     return sections.size();
                 }
             };
-            final Subject asOwner = ownerSubject(broker, doc);
             if (asOwner != null) {
                 broker.pushSubject(asOwner);
             }
