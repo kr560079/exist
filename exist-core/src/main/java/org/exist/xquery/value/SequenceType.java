@@ -28,6 +28,7 @@ import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
 import org.exist.xquery.FunctionSignature;
 import org.exist.xquery.XPathException;
+import org.exist.xquery.schema.TypeAnnotations;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -43,6 +44,8 @@ public class SequenceType {
     private int primaryType = Type.ITEM;
     private Cardinality cardinality = Cardinality.EXACTLY_ONE;
     private QName nodeName = null;
+    private int typeAnnotation = -1;
+    private boolean nillable = false;
     private SequenceType[] functionParamTypes;
     private SequenceType functionReturnType;
 
@@ -106,6 +109,33 @@ public class SequenceType {
 
     public QName getNodeName() {
         return nodeName;
+    }
+
+    /**
+     * The type a node must be annotated with, as in {@code element(N, T)}.
+     *
+     * @return the {@link Type} code, or -1 if the annotation is not tested
+     */
+    public int getTypeAnnotation() {
+        return typeAnnotation;
+    }
+
+    /**
+     * @return true if a nilled node may match the type annotation, as in {@code element(N, T?)}
+     */
+    public boolean isNillable() {
+        return nillable;
+    }
+
+    /**
+     * Require nodes to be annotated with a subtype of the type, as in {@code element(N, T)}.
+     *
+     * @param typeCode the {@link Type} code of the type
+     * @param nillable true if a nilled node may match
+     */
+    public void setTypeAnnotation(final int typeCode, final boolean nillable) {
+        this.typeAnnotation = typeCode;
+        this.nillable = nillable;
     }
 
     public void setNodeName(QName qname) {
@@ -194,7 +224,7 @@ public class SequenceType {
         }
 
         if (nodeName == null) {
-            return true;
+            return hasTypeAnnotation(node);
         }
         //TODO : how to improve performance ?
         final QName realName = getRealName(node);
@@ -208,10 +238,22 @@ public class SequenceType {
                 !nodeName.getNamespaceURI().equals(realName.getNamespaceURI())) {
             return false;
         }
-        if (!(nodeName instanceof QName.WildcardLocalPartQName) && nodeName.getLocalPart() != null) {
-            return nodeName.getLocalPart().equals(realName.getLocalPart());
+        if (!(nodeName instanceof QName.WildcardLocalPartQName) && nodeName.getLocalPart() != null
+                && !nodeName.getLocalPart().equals(realName.getLocalPart())) {
+            return false;
         }
-        return true;
+        return hasTypeAnnotation(node);
+    }
+
+    private boolean hasTypeAnnotation(final Item node) {
+        if (typeAnnotation == -1) {
+            return true;
+        }
+        try {
+            return TypeAnnotations.matches(null, (NodeValue) node, typeAnnotation, nillable);
+        } catch (final XPathException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /**
