@@ -26,6 +26,8 @@ import org.exist.collections.CollectionConfiguration;
 import org.exist.dom.QName;
 import org.exist.dom.persistent.DefaultDocumentSet;
 import org.exist.dom.persistent.DocumentImpl;
+import org.exist.dom.persistent.ElementImpl;
+import org.exist.dom.persistent.IStoredNode;
 import org.exist.dom.persistent.NodeProxy;
 import org.exist.dom.persistent.NodeSet;
 import org.exist.indexing.schematype.DocMeta.DocStatus;
@@ -65,6 +67,9 @@ public class SchemaTypeIndexTest {
     private static final XmldbURI SCHEMAS = XmldbURI.create("/db/st-schema");
     private static final XmldbURI PLAIN = XmldbURI.create("/db/plain");
     private static final XmldbURI CONF = XmldbURI.create("/db/system/config/db/st");
+    private static final XmldbURI ST2 = XmldbURI.create("/db/st2");
+    private static final XmldbURI CONF2 = XmldbURI.create("/db/system/config/db/st2");
+    private static final XmldbURI PLAIN2 = XmldbURI.create("/db/plain2");
 
     private static final String XCONF = "<collection xmlns='" + CC + "'><index xmlns:t='" + T_NS
             + "' xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
@@ -100,7 +105,7 @@ public class SchemaTypeIndexTest {
     @AfterEach
     void tearDown() throws Exception {
         try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            for (final XmldbURI uri : new XmldbURI[] {CONF, ST, SCHEMAS, PLAIN}) {
+            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF2, ST, ST2, SCHEMAS, PLAIN, PLAIN2}) {
                 final Collection col = broker.getCollection(uri);
                 if (col != null) {
                     broker.removeCollection(txn, col);
@@ -175,8 +180,7 @@ public class SchemaTypeIndexTest {
     @Test
     void reindexCollectionRebuilds() throws Exception {
         final DocumentImpl t1 = doc(ST, "t1.xml");
-        final CollectionMeta meta = index().store().getCollectionMeta(t1.getCollection().getId());
-        index().store().removeDocument(t1.getDocId(), meta.localTypeIds().values());
+        index().store().removeDocument(t1.getDocId());
         assertEquals(TypeAnnotation.ANY_TYPE, annotationOf("/t:trade/t:notional/t:amount"));
 
         query("xmldb:reindex('/db/st')");
@@ -259,7 +263,115 @@ public class SchemaTypeIndexTest {
         assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "250").getLength());
     }
 
+    // --- fix round 1: partial reassignment, I/O-free removal, moves ---
+
+    @Test
+    void reindexRootIsParentElement() throws Exception {
+        final SchemaTypeIndexWorker worker = worker();
+        final IStoredNode amount = (IStoredNode) node("/db/st/t1.xml", "/t:trade/t:notional/t:amount").getNode();
+        final IStoredNode notional = (IStoredNode) node("/db/st/t1.xml", "/t:trade/t:notional").getNode();
+        assertEquals(notional.getNodeId(), worker.getReindexRoot(amount, amount.getPath(), false, false).getNodeId());
+        assertEquals(notional.getNodeId(), worker.getReindexRoot(notional, notional.getPath(), true, true).getNodeId());
+        final IStoredNode id = (IStoredNode) node("/db/st/trades.xml", "/t:trades/t:trade[1]/t:party/@id").getNode();
+        final IStoredNode party = (IStoredNode) node("/db/st/trades.xml", "/t:trades/t:trade[1]/t:party").getNode();
+        assertEquals(party.getNodeId(), worker.getReindexRoot(id, id.getPath(), false, false).getNodeId());
+        final IStoredNode plain = (IStoredNode) node("/db/plain/r.xml", "/r/a").getNode();
+        assertNull(worker.getReindexRoot(plain, plain.getPath(), false, false));
+    }
+
+    @Test
+    void xqueryUpdateInsertIntoNestedElement() throws Exception {
+        query("update insert <t:currency xmlns:t='" + T_NS + "'>GBP</t:currency> into doc('/db/st/t1.xml')/t:trade/t:notional");
+
+        assertEquals(code("CurrencyCode"), annotationOf("/t:trade/t:notional/t:currency[2]").typeCode());
+        assertEquals(2, nodesOfType("t1.xml", code("CurrencyCode"), false).getLength());
+        assertEquals(1, nodesOfType("t1.xml", code("NonNegativeDecimal"), false).getLength());
+        assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "100").getLength());
+        assertEquals(code("Swap"), annotationOf("/t:trade/t:swap").typeCode());
+        assertEquals(DocStatus.TYPED, docMeta("t1.xml").status());
+    }
+
+    @Test
+    void xqueryUpdateReplaceReassignsSubtree() throws Exception {
+        query("update replace doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with <t:amount xmlns:t='" + T_NS + "'>42</t:amount>");
+
+        assertEquals(code("NonNegativeDecimal"), annotationOf("/t:trade/t:notional/t:amount").typeCode());
+        assertEquals(1, nodesOfType("t1.xml", code("NonNegativeDecimal"), false).getLength());
+        assertEquals(0, typedValues("t1.xml", code("NonNegativeDecimal"), "100").getLength());
+        assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "42").getLength());
+        assertEquals(code("CurrencyCode"), annotationOf("/t:trade/t:notional/t:currency").typeCode());
+    }
+
+    @Test
+    void seededUnassignableNodeUpdatesDocMeta() throws Exception {
+        query("update insert <t:bogus xmlns:t='" + T_NS + "'/> into doc('/db/st/t1.xml')/t:trade");
+        assertEquals(DocStatus.PARTIAL, docMeta("t1.xml").status());
+        assertTrue(docMeta("t1.xml").unassignablePaths().contains("/t:trade[1]/t:bogus[1]"),
+                docMeta("t1.xml").unassignablePaths().toString());
+        assertEquals(TypeAnnotation.ANY_TYPE, annotationOf("/t:trade/t:bogus"));
+
+        query("update delete doc('/db/st/t1.xml')/t:trade/t:bogus");
+        assertEquals(DocStatus.TYPED, docMeta("t1.xml").status());
+        assertTrue(docMeta("t1.xml").unassignablePaths().isEmpty());
+    }
+
+    @Test
+    void updateValueOnTypedAttributeKeepsAnnotation() throws Exception {
+        final String party = "/t:trades/t:trade[1]/t:party";
+        assertEquals(Type.ID, annotationIn("/db/st/trades.xml", party + "/@id").typeCode());
+
+        query("update value doc('/db/st/trades.xml')" + party + "/@id with 'party9'");
+        assertEquals(Type.ID, annotationIn("/db/st/trades.xml", party + "/@id").typeCode());
+        assertEquals(1, provider().nodesOfType(docs("trades.xml"), Type.ID, false, Type.ATTRIBUTE).getLength());
+
+        // DOM API: an existing attribute is reindexed on its own, in STORE mode
+        ((ElementImpl) node("/db/st/trades.xml", party).getNode()).setAttribute("id", "party8");
+        assertEquals(Type.ID, annotationIn("/db/st/trades.xml", party + "/@id").typeCode());
+        assertEquals(1, provider().nodesOfType(docs("trades.xml"), Type.ID, false, Type.ATTRIBUTE).getLength());
+    }
+
+    @Test
+    void removalInUnconfiguredCollectionDoesNoIndexIo() throws Exception {
+        store(PLAIN2, "p.xml", "<p><q/></p>");
+        final long before = index().store().accessCount();
+        query("xmldb:remove('/db/plain', 'r.xml')");
+        query("xmldb:remove('/db/plain2')");
+        assertEquals(before, index().store().accessCount());
+    }
+
+    @Test
+    void moveBetweenConfiguredCollectionsLeavesNoPhantomMembers() throws Exception {
+        store(CONF2, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
+        // a different first document makes the second collection allocate its local ids in another order
+        store(ST2, "bad.xml", fixture("bad.xml"));
+        final int docId = doc(ST, "t1.xml").getDocId();
+        final java.util.Set<Short> sourceIds = index().store().memberTypeIdsByScan(docId);
+        assertFalse(sourceIds.isEmpty());
+
+        query("xmldb:move('/db/st', '/db/st2', 't1.xml')");
+
+        final DocumentImpl moved = doc(ST2, "t1.xml");
+        assertEquals(docId, moved.getDocId());
+        final DefaultDocumentSet docs = new DefaultDocumentSet();
+        docs.add(moved);
+        // every type member entry of the document matches the node's current annotation
+        for (final short localTypeId : index().store().memberTypeIdsByScan(docId)) {
+            for (final NodeProxy member : index().store().nodesOfType(docs, new short[] {localTypeId})) {
+                final TypeIndexStore.StoredAnnotation annotation = index().store().getAnnotation(docId, member.getNodeId());
+                assertNotNull(annotation, "phantom member " + member.getNodeId() + " of local type " + localTypeId);
+                assertEquals(localTypeId, annotation.localTypeId(), "phantom member " + member.getNodeId());
+            }
+        }
+        assertEquals(code("NonNegativeDecimal"), provider().annotationOf(node("/db/st2/t1.xml", "/t:trade/t:notional/t:amount")).typeCode());
+        assertEquals(1, provider().nodesOfType(docs, code("NonNegativeDecimal"), false, Type.ELEMENT).getLength());
+        assertEquals(1, provider().nodesOfType(docs, code("Swap"), false, Type.ELEMENT).getLength());
+    }
+
     // --- helpers ---
+
+    private SchemaTypeIndexWorker worker() {
+        return (SchemaTypeIndexWorker) broker.getIndexController().getWorkerByIndexId(SchemaTypeIndex.ID);
+    }
 
     private SchemaTypeIndex index() {
         return (SchemaTypeIndex) pool.getIndexManager().getIndexById(SchemaTypeIndex.ID);

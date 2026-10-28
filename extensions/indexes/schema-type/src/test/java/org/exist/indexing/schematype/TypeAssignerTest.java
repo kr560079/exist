@@ -705,4 +705,75 @@ public class TypeAssignerTest {
         assertEquals(amount, last.nodeId());
         assertEquals(UNASSIGNABLE, last.status());
     }
+
+    // --- partial assignment of a stored subtree ---
+
+    private static XSComplexTypeDefinition notionalType() {
+        final XSComplexTypeDefinition tradeType =
+                (XSComplexTypeDefinition) model.getElementDeclaration("trade", NS).getTypeDefinition();
+        return (XSComplexTypeDefinition) schema.resolveChild(tradeType, new QName("notional", NS)).decl().getTypeDefinition();
+    }
+
+    @Test
+    public void seededSubtreeIsAssignedFromItsParentType() {
+        final TypeAssigner assigner = new TypeAssigner(schema, checker);
+        assigner.startSubtree(notionalType(), false, "/t:trade[1]/t:notional[1]", Map.of(new QName("currency", NS), 1));
+        final NodeId id = new org.exist.numbering.DLN("1.4.3");
+        assigner.startElement(id, new QName("currency", NS, "t"), prefix -> null);
+        assigner.characters("EUR");
+        assigner.endElement();
+        final List<Assignment> out = assigner.drain();
+        assertEquals(1, out.size());
+        assertEquals(id, out.get(0).nodeId());
+        assertEquals(ANNOTATED, out.get(0).status());
+        assertEquals(code("CurrencyCode"), out.get(0).typeCode());
+        assertEquals("/t:trade[1]/t:notional[1]/t:currency[2]", out.get(0).path());
+    }
+
+    @Test
+    public void seededSubtreeChecksValuesAndContent() {
+        final TypeAssigner assigner = new TypeAssigner(schema, checker);
+        assigner.startSubtree(notionalType(), false, "/t:trade[1]/t:notional[1]", Map.of());
+        assigner.startElement(new org.exist.numbering.DLN("1.4.1"), new QName("bogus", NS, "t"), prefix -> null);
+        assigner.endElement();
+        final List<Assignment> out = assigner.drain();
+        assertEquals(1, out.size());
+        assertEquals(UNASSIGNABLE, out.get(0).status());
+        assertEquals("/t:trade[1]/t:notional[1]/t:bogus[1]", out.get(0).path());
+    }
+
+    @Test
+    public void unannotatedSeedYieldsNothing() {
+        final TypeAssigner assigner = new TypeAssigner(schema, checker);
+        assigner.startSubtree(null, false, "/t:trade[1]/t:opaque[1]", Map.of());
+        assigner.startElement(new org.exist.numbering.DLN("1.9.1"), new QName("amount", NS, "t"), prefix -> null);
+        assigner.characters("1");
+        assigner.endElement();
+        assertTrue(assigner.drain().isEmpty());
+    }
+
+    @Test
+    public void startSubtreeMustComeFirst() {
+        final TypeAssigner assigner = new TypeAssigner(schema, checker);
+        assigner.startElement(new org.exist.numbering.DLN("1"), new QName("trade", NS, "t"), prefix -> null);
+        assertThrows(IllegalStateException.class, () -> assigner.startSubtree(notionalType(), false, "/x", Map.of()));
+    }
+
+    @Test
+    public void singleAttributeAssignedFromOwnerType() {
+        final TypeAssigner assigner = new TypeAssigner(schema, checker);
+        final XSComplexTypeDefinition tradeType =
+                (XSComplexTypeDefinition) model.getElementDeclaration("trade", NS).getTypeDefinition();
+        final XSComplexTypeDefinition partyType =
+                (XSComplexTypeDefinition) schema.resolveChild(tradeType, new QName("party", NS)).decl().getTypeDefinition();
+        final NodeId id = new org.exist.numbering.DLN("1.8.1");
+        final Assignment a = assigner.assignAttribute(partyType, "/t:trade[1]/t:party[1]", id, new QName("id", ""), "party9");
+        assertNotNull(a);
+        assertEquals(ANNOTATED, a.status());
+        assertEquals(Type.ID, a.typeCode());
+        assertEquals("/t:trade[1]/t:party[1]/@id", a.path());
+        assertEquals(UNASSIGNABLE, assigner.assignAttribute(partyType, "/p", id, new QName("other", ""), "x").status());
+        assertNull(assigner.assignAttribute(partyType, "/p", id, new QName("nil", XSI), "true"));
+        assertNull(assigner.assignAttribute(null, "/p", id, new QName("id", ""), "x"));
+    }
 }

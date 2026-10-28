@@ -150,6 +150,8 @@ public final class TypeAssigner {
         private boolean hasNonWhitespaceText;
         private boolean hasChildElements;
         private @Nullable Map<QName, Integer> childCounts;
+        /** a seed frame (see {@link TypeAssigner#startSubtree}) whose children are outside the schema's typing */
+        private boolean unannotated;
 
         private Frame(@Nullable final Frame parent, final NodeId id, final QName name, final String path,
                 final Function<String, String> prefixToUri) {
@@ -321,6 +323,59 @@ public final class TypeAssigner {
         return result;
     }
 
+    // --- partial assignment ---
+
+    /**
+     * Prepare the assignment of a subtree of a stored document: the events that follow are those of one element
+     * (and its subtree), a child of an already annotated parent. Must be called before any other event.
+     *
+     * @param parentType         the parent's annotated type, or null if the parent is not annotated (the subtree
+     *                           then gets no assignments)
+     * @param parentNilled       whether the parent is nilled
+     * @param parentPath         the parent's path, as in {@link Assignment#path()}
+     * @param precedingSiblings  the number of the parent's element children before the subtree root, by name
+     *                           (for the positions in paths)
+     */
+    public void startSubtree(@Nullable final XSTypeDefinition parentType, final boolean parentNilled,
+            final String parentPath, final Map<QName, Integer> precedingSiblings) {
+        if (!stack.isEmpty() || pending != null || silentDepth > 0) {
+            throw new IllegalStateException("startSubtree must precede all other events");
+        }
+        final Frame seed = new Frame(null, null, null, parentPath, prefix -> null);
+        seed.childCounts = new HashMap<>(precedingSiblings);
+        if (parentType == null) {
+            seed.unannotated = true;
+        } else {
+            seed.type = parentType;
+            seed.typeCode = schema.typeCode(parentType);
+            seed.nilled = parentNilled;
+            seed.simpleContent = isSimpleContent(parentType);
+        }
+        stack.push(seed);
+    }
+
+    /**
+     * Assign the type of one attribute of a stored element, outside of a stream of events.
+     *
+     * @param ownerType the owner element's annotated type, or null if the owner is not annotated
+     * @param ownerPath the owner element's path, as in {@link Assignment#path()}
+     * @param id        the attribute's node id
+     * @param name      the attribute's name
+     * @param value     the attribute's value
+     * @return the attribute's assignment, or null if it gets none (unannotated owner, {@code xsi:*}, skip or
+     *         lax wildcard, undeclared {@code xml:*})
+     */
+    public @Nullable Assignment assignAttribute(@Nullable final XSTypeDefinition ownerType, final String ownerPath,
+            final NodeId id, final QName name, final String value) {
+        if (ownerType == null || XSI_NS.equals(name.getNamespaceURI())) {
+            return null;
+        }
+        final Frame owner = new Frame(null, null, null, ownerPath, prefix -> null);
+        owner.type = ownerType;
+        final Slot slot = resolveAttribute(owner, new PendingAttribute(id, name, value));
+        return slot == null ? null : slot.toAssignment();
+    }
+
     // --- resolution ---
 
     private void resolvePending() {
@@ -354,6 +409,11 @@ public final class TypeAssigner {
             }
             decl = global.get();
         } else {
+            if (parent.unannotated) {
+                // the seeded parent has no annotation: its subtree is unannotated
+                silent();
+                return;
+            }
             if (parent.nilled || parent.simpleContent) {
                 // the parent becomes unassignable at its end, so its subtree is unannotated
                 parent.hasChildElements = true;

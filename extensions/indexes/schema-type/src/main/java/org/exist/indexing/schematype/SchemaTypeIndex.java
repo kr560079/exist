@@ -79,6 +79,8 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     /** the resolved local type tables, by collection id */
     private final ConcurrentHashMap<Integer, LocalTypeTable> tables = new ConcurrentHashMap<>();
     private final Object tableLock = new Object();
+    /** the ids of the collections with metadata, i.e. with entries; lets unconfigured collections skip all I/O */
+    private final Set<Integer> collectionsWithMeta = ConcurrentHashMap.newKeySet();
     /** unstable type ids already reported */
     private final Set<String> reportedUnstable = ConcurrentHashMap.newKeySet();
 
@@ -100,6 +102,11 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             throw new DatabaseConfigurationException("Failed to create index file: " + dataFile.toAbsolutePath() + ": " + e.getMessage());
         }
         store = new TypeIndexStore(db, pool.getLockManager(), pool.getNodeFactory());
+        try {
+            collectionsWithMeta.addAll(store.collectionIdsWithMeta());
+        } catch (final IOException e) {
+            throw new DatabaseConfigurationException("Failed to read index file: " + dataFile.toAbsolutePath() + ": " + e.getMessage());
+        }
         if (LOG.isDebugEnabled()) {
             LOG.debug("Opened schema type index: {}", dataFile.toAbsolutePath());
         }
@@ -111,6 +118,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             db.close();
         }
         tables.clear();
+        collectionsWithMeta.clear();
     }
 
     @Override
@@ -126,6 +134,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             db.closeAndRemove();
         }
         tables.clear();
+        collectionsWithMeta.clear();
     }
 
     @Override
@@ -199,6 +208,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             }
             final CollectionMeta updated = new CollectionMeta(schema.key(), ids);
             store.putCollectionMeta(collectionId, updated);
+            collectionsWithMeta.add(collectionId);
             final LocalTypeTable table = new LocalTypeTable(updated, schema);
             tables.put(collectionId, table);
             return table;
@@ -211,8 +221,16 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     void dropCollection(final int collectionId) throws IOException {
         synchronized (tableLock) {
             store.removeCollectionMeta(collectionId);
+            collectionsWithMeta.remove(collectionId);
             tables.remove(collectionId);
         }
+    }
+
+    /**
+     * @return whether the collection has metadata, and so possibly entries; answered from memory
+     */
+    boolean hasMeta(final int collectionId) {
+        return collectionsWithMeta.contains(collectionId);
     }
 
     /**

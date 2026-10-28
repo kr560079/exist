@@ -46,10 +46,10 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -64,8 +64,10 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <tr><td>{@code 0x02}</td><td>docId, nodeId</td><td>localTypeId (short), flags (bit 0 = nilled)</td></tr>
  *   <tr><td>{@code 0x03}</td><td>localTypeId, docId</td><td>node list</td></tr>
  *   <tr><td>{@code 0x04}</td><td>localTypeId, {@link org.exist.storage.Indexable#serializeValue} key, docId</td><td>node list</td></tr>
- *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, value key</td><td>empty: the {@code 0x04} keys of a document, so
- *       that removing a document does not scan the typed values of all documents</td></tr>
+ *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, value key</td><td>placeholder: the {@code 0x04} keys of a document,
+ *       so that removing a document does not scan the typed values of all documents</td></tr>
+ *   <tr><td>{@code 0x06}</td><td>docId, localTypeId</td><td>placeholder: the {@code 0x03} keys of a document, so that
+ *       they are removed independently of the local type table of the document's current collection</td></tr>
  * </table>
  *
  * <p>Integers are big-endian. A node id in a key is its unit count (short) followed by its serialized bytes.
@@ -84,6 +86,7 @@ final class TypeIndexStore {
     static final byte TYPE_MEMBERS = 0x03;
     static final byte TYPED_VALUES = 0x04;
     static final byte DOC_TYPED_KEYS = 0x05;
+    static final byte DOC_MEMBER_KEYS = 0x06;
 
     private static final byte NILLED = 0x01;
     private static final byte[] EMPTY = {0};
@@ -102,6 +105,8 @@ final class TypeIndexStore {
     /** write generations, striped by document id to bound memory; a collision only causes a spurious re-read */
     private static final int GENERATION_STRIPES = 4096;
     private final AtomicLongArray generations = new AtomicLongArray(GENERATION_STRIPES);
+    /** the number of file accesses, for tests */
+    private final AtomicLong accesses = new AtomicLong();
 
     TypeIndexStore(final BFile db, final LockManager lockManager, final NodeIdFactory nodeFactory) {
         this.db = db;
@@ -126,7 +131,26 @@ final class TypeIndexStore {
         generations.incrementAndGet(docId & (GENERATION_STRIPES - 1));
     }
 
+    /**
+     * @return the number of file accesses so far
+     */
+    long accessCount() {
+        return accesses.get();
+    }
+
     // --- metadata ---
+
+    /**
+     * @return the ids of the collections which have metadata
+     */
+    Set<Integer> collectionIdsWithMeta() throws IOException {
+        final byte[] prefix = {COLLECTION_META};
+        final Set<Integer> ids = new HashSet<>();
+        for (final byte[] key : keys(prefix, prefix)) {
+            ids.add(ByteConversion.byteToIntH(key, 1));
+        }
+        return ids;
+    }
 
     @Nullable CollectionMeta getCollectionMeta(final int collectionId) throws IOException {
         final byte[] data = get(intKey(COLLECTION_META, collectionId));
@@ -179,6 +203,7 @@ final class TypeIndexStore {
     void addTypeMembers(final short localTypeId, final int docId, final List<Member> members) throws IOException {
         if (!members.isEmpty()) {
             append(membersKey(localTypeId, docId), encode(members));
+            put(docMemberKey(docId, localTypeId), EMPTY);
             touched(docId);
         }
     }
@@ -264,27 +289,25 @@ final class TypeIndexStore {
 
     /**
      * Remove all entries of a document, its metadata included.
-     *
-     * @param localTypeIds the local type ids of the document's collection
      */
-    void removeDocument(final int docId, final Collection<Short> localTypeIds) throws IOException {
-        removeAnnotations(docId, localTypeIds);
+    void removeDocument(final int docId) throws IOException {
+        removeAnnotations(docId);
         remove(intKey(DOC_META, docId));
         touched(docId);
     }
 
     /**
      * Remove the annotation, type member and typed value entries of a document, keeping its metadata.
-     *
-     * @param localTypeIds the local type ids of the document's collection
      */
-    void removeAnnotations(final int docId, final Collection<Short> localTypeIds) throws IOException {
+    void removeAnnotations(final int docId) throws IOException {
         final byte[] annotations = intKey(ANNOTATION, docId);
         for (final byte[] key : keys(annotations, annotations)) {
             remove(key);
         }
-        for (final short localTypeId : localTypeIds) {
-            remove(membersKey(localTypeId, docId));
+        final byte[] memberKeys = intKey(DOC_MEMBER_KEYS, docId);
+        for (final byte[] key : keys(memberKeys, memberKeys)) {
+            remove(membersKey(ByteConversion.byteToShortH(key, 5), docId));
+            remove(key);
         }
         final byte[] typed = intKey(DOC_TYPED_KEYS, docId);
         for (final byte[] key : keys(typed, typed)) {
@@ -315,7 +338,9 @@ final class TypeIndexStore {
             }
         }
         for (final short localTypeId : affected) {
-            filter(membersKey(localTypeId, docId), subtreeRoot);
+            if (filter(membersKey(localTypeId, docId), subtreeRoot)) {
+                remove(docMemberKey(docId, localTypeId));
+            }
         }
         final byte[] typed = intKey(DOC_TYPED_KEYS, docId);
         for (final byte[] key : keys(typed, typed)) {
@@ -429,6 +454,30 @@ final class TypeIndexStore {
         return key;
     }
 
+    private static byte[] docMemberKey(final int docId, final short localTypeId) {
+        final byte[] key = new byte[7];
+        key[0] = DOC_MEMBER_KEYS;
+        ByteConversion.intToByteH(docId, key, 1);
+        ByteConversion.shortToByteH(localTypeId, key, 5);
+        return key;
+    }
+
+    /**
+     * Scan the whole type member table for the entries of a document; for tests.
+     *
+     * @return the local type ids with a {@code 0x03} entry for the document
+     */
+    Set<Short> memberTypeIdsByScan(final int docId) throws IOException {
+        final byte[] prefix = {TYPE_MEMBERS};
+        final Set<Short> ids = new HashSet<>();
+        for (final byte[] key : keys(prefix, prefix)) {
+            if (ByteConversion.byteToIntH(key, 3) == docId) {
+                ids.add(ByteConversion.byteToShortH(key, 1));
+            }
+        }
+        return ids;
+    }
+
     private static byte[] docTypedKey(final int docId, final short localTypeId, final byte[] valueKey) {
         final byte[] key = new byte[7 + valueKey.length];
         key[0] = DOC_TYPED_KEYS;
@@ -464,6 +513,7 @@ final class TypeIndexStore {
      * @return the keys {@code >= start} which start with {@code prefix}
      */
     private List<byte[]> keys(final byte[] start, final byte[] prefix) throws IOException {
+        accesses.incrementAndGet();
         final byte[] upper = successor(prefix);
         final IndexQuery query = upper == null
                 ? new IndexQuery(IndexQuery.GEQ, new Value(start))
@@ -485,6 +535,7 @@ final class TypeIndexStore {
     }
 
     private @Nullable byte[] get(final byte[] key) throws IOException {
+        accesses.incrementAndGet();
         try (final ManagedLock<ReentrantLock> lock = lockManager.acquireBtreeReadLock(db.getLockName())) {
             final Value value = db.get(new Value(key));
             return value == null ? null : value.getData();
@@ -494,6 +545,7 @@ final class TypeIndexStore {
     }
 
     private void put(final byte[] key, final byte[] value) throws IOException {
+        accesses.incrementAndGet();
         try (final ManagedLock<ReentrantLock> lock = lockManager.acquireBtreeWriteLock(db.getLockName())) {
             if (db.put(new Value(key), value, true) == BFile.UNKNOWN_ADDRESS) {
                 throw new IOException("Unable to write to " + db.getFile());
@@ -504,6 +556,7 @@ final class TypeIndexStore {
     }
 
     private void append(final byte[] key, final byte[] value) throws IOException {
+        accesses.incrementAndGet();
         try (final ManagedLock<ReentrantLock> lock = lockManager.acquireBtreeWriteLock(db.getLockName())) {
             if (db.append(new Value(key), new org.exist.util.FixedByteArray(value)) == BFile.UNKNOWN_ADDRESS) {
                 throw new IOException("Unable to write to " + db.getFile());
@@ -514,6 +567,7 @@ final class TypeIndexStore {
     }
 
     private void remove(final byte[] key) throws IOException {
+        accesses.incrementAndGet();
         try (final ManagedLock<ReentrantLock> lock = lockManager.acquireBtreeWriteLock(db.getLockName())) {
             db.remove(new Value(key));
         } catch (final LockException e) {

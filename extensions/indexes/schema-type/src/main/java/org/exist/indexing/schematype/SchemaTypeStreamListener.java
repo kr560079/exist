@@ -21,6 +21,7 @@
  */
 package org.exist.indexing.schematype;
 
+import org.apache.xerces.xs.XSTypeDefinition;
 import org.exist.dom.QName;
 import org.exist.dom.persistent.AbstractCharacterData;
 import org.exist.dom.persistent.AttrImpl;
@@ -48,22 +49,38 @@ import java.util.Map;
  * {@link SchemaTypeIndexWorker#flush()}.
  *
  * <ul>
- *   <li>{@link ReindexMode#STORE} from the document's root element (storing, reindexing, or the full
- *       reassignment requested by {@link SchemaTypeIndexWorker#getReindexRoot}): a <em>full pass</em>. The nodes are
- *       fed to a {@link TypeAssigner}; the document's annotations are replaced by the assignments.</li>
- *   <li>{@link ReindexMode#STORE} of a subtree, or {@link ReindexMode#REMOVE_SOME_NODES}: the entries of the
- *       subtrees received are removed. Node updates of a typed document are always followed by a full pass, since
- *       the worker's reindex root is the root element, so a stored subtree is typed by that pass.</li>
+ *   <li>{@link ReindexMode#STORE} from the document's root element (storing, reindexing): a <em>full pass</em>.
+ *       The nodes are fed to a {@link TypeAssigner}; the document's annotations are replaced by the assignments.</li>
+ *   <li>{@link ReindexMode#STORE} of a subtree (the reindex root of an update, see
+ *       {@link SchemaTypeIndexWorker#getReindexRoot}, or a single attribute): a <em>seeded pass</em>. The assigner
+ *       is seeded with the stored annotation, path and in-scope namespaces of the subtree root's parent; the
+ *       subtree's annotations are replaced by the assignments.</li>
+ *   <li>{@link ReindexMode#REMOVE_SOME_NODES}: the entries of the subtrees received are removed.</li>
  * </ul>
  *
  * <p>{@link ReindexMode#REMOVE_ALL_NODES} needs no events: the worker removes the document's entries on flush.</p>
  */
 final class SchemaTypeStreamListener extends AbstractStreamListener {
 
-    enum PassKind { NONE, FULL, SUBTREES }
+    enum PassKind { NONE, FULL, SEEDED, REMOVE }
 
     /** an assignment with the lexical value of its node, when a typed value may be needed */
     record Pending(TypeAssigner.Assignment assignment, @Nullable String lexical) {
+    }
+
+    /**
+     * What the assigner needs to know about the parent of a subtree root.
+     *
+     * @param parentType  the parent's annotated type, or null if it is not annotated
+     * @param parentNilled whether the parent is nilled
+     * @param parentPath  the parent's path
+     * @param preceding   the parent's element children before the subtree root with the root's name (empty for an
+     *                    attribute)
+     * @param namespaces  the namespaces in scope at the parent
+     */
+    record Seed(@Nullable XSTypeDefinition parentType, boolean parentNilled, String parentPath,
+            Map<QName, Integer> preceding, Map<String, String> namespaces) {
+        static final Seed UNANNOTATED = new Seed(null, false, "", Map.of(), Map.of());
     }
 
     /** an attribute value kept until the attribute's assignment is drained */
@@ -75,9 +92,11 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     private PassKind kind = PassKind.NONE;
     private int docId = -1;
 
-    // full pass
+    // assignment passes
     private @Nullable SchemaTypeConfig config;
     private @Nullable TypeAssigner assigner;
+    private @Nullable NodeId rootId;
+    private @Nullable String rootPath;
     private boolean collectValues;
     private final Deque<Map<String, String>> namespaces = new ArrayDeque<>();
     private final Deque<StringBuilder> texts = new ArrayDeque<>();
@@ -113,12 +132,27 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
 
     @Override
     public void startElement(final Txn transaction, final ElementImpl element, final NodePath path) {
-        final ReindexMode mode = worker.getMode();
-        final NodeId id = element.getNodeId();
-        if (!inFullPass() && mode == ReindexMode.STORE && id.getTreeLevel() == 1) {
-            beginFullPass();
+        if (!inPass()) {
+            final ReindexMode mode = worker.getMode();
+            if (mode == ReindexMode.STORE) {
+                flushPending();
+                if (element.getNodeId().getTreeLevel() == 1) {
+                    beginPass(PassKind.FULL, element.getNodeId(), null, null);
+                } else {
+                    final Seed seed = worker.seedFor(element);
+                    final Integer preceding = seed.preceding().get(element.getQName());
+                    final String path0 = seed.parentType() == null ? null : seed.parentPath() + '/'
+                            + element.getQName().getStringValue() + '[' + ((preceding == null ? 0 : preceding) + 1) + ']';
+                    if (beginPass(PassKind.SEEDED, element.getNodeId(), path0, seed.namespaces())) {
+                        assigner.startSubtree(seed.parentType(), seed.parentNilled(), seed.parentPath(), seed.preceding());
+                    }
+                }
+            } else if (mode == ReindexMode.REMOVE_SOME_NODES) {
+                removalNode(element.getNodeId());
+                depth++;
+            }
         }
-        if (inFullPass()) {
+        if (inPass()) {
             final Map<String, String> parent = namespaces.peek();
             Map<String, String> scope = parent == null ? Map.of() : parent;
             final Iterator<String> prefixes = element.getPrefixes();
@@ -136,32 +170,46 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
             }
             final Map<String, String> inScope = scope;
             final QName name = element.getQName();
-            assigner.startElement(id, name, prefix -> resolvePrefix(inScope, name, prefix));
+            assigner.startElement(element.getNodeId(), name, prefix -> resolvePrefix(inScope, name, prefix));
             drain(null, null);
-        } else if (isSubtreeMode(mode)) {
-            subtreeNode(id);
-            depth++;
         }
         super.startElement(transaction, element, path);
     }
 
     @Override
     public void attribute(final Txn transaction, final AttrImpl attrib, final NodePath path) {
-        if (inFullPass()) {
+        if (inPass()) {
             final String value = attrib.getValue();
             assigner.attribute(attrib.getNodeId(), attrib.getQName(), value);
             if (collectValues) {
                 attrValues.add(new AttrValue(attrib.getNodeId(), value));
             }
-        } else if (isSubtreeMode(worker.getMode())) {
-            subtreeNode(attrib.getNodeId());
+        } else {
+            final ReindexMode mode = worker.getMode();
+            if (mode == ReindexMode.STORE) {
+                // an attribute on its own (e.g. a changed value): assign it from its owner's type
+                flushPending();
+                final Seed seed = worker.seedFor(attrib);
+                final String path0 = seed.parentType() == null ? null
+                        : seed.parentPath() + "/@" + attrib.getQName().getStringValue();
+                if (beginPass(PassKind.SEEDED, attrib.getNodeId(), path0, Map.of())) {
+                    final TypeAssigner.Assignment a = assigner.assignAttribute(seed.parentType(), seed.parentPath(),
+                            attrib.getNodeId(), attrib.getQName(), attrib.getValue());
+                    if (a != null) {
+                        pending.add(new Pending(a, collectValues ? attrib.getValue() : null));
+                    }
+                    rootEnded = true;
+                }
+            } else if (mode == ReindexMode.REMOVE_SOME_NODES) {
+                removalNode(attrib.getNodeId());
+            }
         }
         super.attribute(transaction, attrib, path);
     }
 
     @Override
     public void characters(final Txn transaction, final AbstractCharacterData text, final NodePath path) {
-        if (inFullPass()) {
+        if (inPass()) {
             final short type = text.getNodeType();
             if (type == Node.TEXT_NODE || type == Node.CDATA_SECTION_NODE) {
                 final String data = text.getData();
@@ -177,58 +225,64 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
 
     @Override
     public void endElement(final Txn transaction, final ElementImpl element, final NodePath path) {
-        if (inFullPass()) {
+        if (inPass()) {
             final String text = collectValues && !texts.isEmpty() ? texts.pop().toString() : null;
             assigner.endElement();
             drain(element.getNodeId(), text);
             attrValues.clear();
             namespaces.pop();
-            if (element.getNodeId().getTreeLevel() == 1) {
+            if (element.getNodeId().equals(rootId)) {
                 rootEnded = true;
             }
-        } else if (kind == PassKind.SUBTREES && depth > 0) {
+        } else if (kind == PassKind.REMOVE && depth > 0) {
             depth--;
         }
         super.endElement(transaction, element, path);
     }
 
-    /** true while the nodes of a full pass are being received */
-    private boolean inFullPass() {
-        return kind == PassKind.FULL && !rootEnded;
-    }
-
-    private static boolean isSubtreeMode(final ReindexMode mode) {
-        return mode == ReindexMode.STORE || mode == ReindexMode.REMOVE_SOME_NODES;
+    /** true while the nodes of an assignment pass are being received */
+    private boolean inPass() {
+        return (kind == PassKind.FULL || kind == PassKind.SEEDED) && !rootEnded;
     }
 
     // --- passes ---
 
-    private void beginFullPass() {
-        if (kind == PassKind.FULL) {
-            // a completed pass not yet flushed
+    /** hand the work collected so far to the worker before a new stream starts */
+    private void flushPending() {
+        if (kind != PassKind.NONE) {
             worker.flush();
         }
+    }
+
+    /**
+     * @return false if the collection has no configuration (the stream is ignored)
+     */
+    private boolean beginPass(final PassKind passKind, final NodeId root, @Nullable final String path,
+            @Nullable final Map<String, String> seedNamespaces) {
         final SchemaTypeConfig cfg = worker.currentConfig();
         reset();
         if (cfg == null) {
-            return;
+            return false;
         }
-        kind = PassKind.FULL;
+        kind = passKind;
         docId = worker.getDocument().getDocId();
         config = cfg;
+        rootId = root;
+        rootPath = path;
         assigner = new TypeAssigner(cfg.schema(), cfg.checkValues() ? new ValueChecker(cfg.schema()) : null);
         collectValues = !cfg.typedValueTypes().isEmpty();
         clearBeforeWrite = true;
+        if (seedNamespaces != null) {
+            namespaces.push(seedNamespaces);
+        }
+        return true;
     }
 
-    private void subtreeNode(final NodeId id) {
-        if (kind == PassKind.FULL) {
-            // a completed pass not yet flushed
-            worker.flush();
-        }
-        if (kind != PassKind.SUBTREES) {
+    private void removalNode(final NodeId id) {
+        if (kind != PassKind.REMOVE) {
+            flushPending();
             reset();
-            kind = PassKind.SUBTREES;
+            kind = PassKind.REMOVE;
             docId = worker.getDocument().getDocId();
         }
         if (depth == 0) {
@@ -276,6 +330,15 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         return config;
     }
 
+    @Nullable NodeId rootId() {
+        return rootId;
+    }
+
+    /** the path of the root of a seeded pass, null if its parent is not annotated */
+    @Nullable String rootPath() {
+        return rootPath;
+    }
+
     /** the assignments drained since the last call */
     List<Pending> takePending() {
         final List<Pending> result = new ArrayList<>(pending);
@@ -283,7 +346,7 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         return result;
     }
 
-    /** true once: whether the document's entries must be cleared before the first write of the pass */
+    /** true once: whether the old entries must be cleared before the first write of the pass */
     boolean takeClear() {
         final boolean clear = clearBeforeWrite;
         clearBeforeWrite = false;
@@ -323,6 +386,8 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         docId = -1;
         config = null;
         assigner = null;
+        rootId = null;
+        rootPath = null;
         collectValues = false;
         namespaces.clear();
         texts.clear();

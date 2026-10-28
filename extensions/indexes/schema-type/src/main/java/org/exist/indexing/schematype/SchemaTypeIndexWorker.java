@@ -23,11 +23,13 @@ package org.exist.indexing.schematype;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.xerces.xs.XSTypeDefinition;
 import org.exist.EXistException;
 import org.exist.collections.Collection;
 import org.exist.dom.QName;
 import org.exist.dom.persistent.DefaultDocumentSet;
 import org.exist.dom.persistent.DocumentImpl;
+import org.exist.dom.persistent.ElementImpl;
 import org.exist.dom.persistent.DocumentSet;
 import org.exist.dom.persistent.IStoredNode;
 import org.exist.dom.persistent.NewArrayNodeSet;
@@ -56,14 +58,18 @@ import org.exist.xquery.value.Item;
 import org.exist.xquery.value.Sequence;
 import org.exist.xquery.value.SequenceIterator;
 import org.exist.xquery.value.Type;
+import org.exist.xquery.value.UserDefinedType;
+import org.exist.xquery.value.UserTypeRegistry;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -185,7 +191,9 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     @Override
     public void setMode(final ReindexMode mode) {
         this.mode = mode;
-        if (mode == ReindexMode.REMOVE_ALL_NODES && document != null) {
+        // only collections which have entries need a removal; others are skipped without any I/O
+        if (mode == ReindexMode.REMOVE_ALL_NODES && document != null && document.getCollection() != null
+                && index.hasMeta(document.getCollection().getId())) {
             removeAllPending = true;
         }
     }
@@ -205,19 +213,23 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     }
 
     /**
-     * Any change to a typed document is handled by reassigning the types of the whole document, so the reindex
-     * root is the root element: the assigner needs the types of all ancestors of a changed node.
+     * The reindex root of a change is the parent element of the changed node (the element itself when its
+     * content changes, {@code includeSelf}): the subtree is then reassigned from the parent's stored annotation
+     * (see {@link SchemaTypeStreamListener}), and the other indexes only re-stream that subtree.
      */
     @Override
     public <T extends IStoredNode> IStoredNode getReindexRoot(final IStoredNode<T> node, final NodePath path, final boolean insert, final boolean includeSelf) {
         if (configOf(node.getOwnerDocument().getCollection()) == null) {
             return null;
         }
-        IStoredNode current = node;
-        while (current != null && current.getNodeId().getTreeLevel() > 1) {
-            current = current.getParentStoredNode();
+        if (includeSelf && node.getNodeType() == Node.ELEMENT_NODE) {
+            return node;
         }
-        return current;
+        final IStoredNode parent = node.getParentStoredNode();
+        if (parent != null && parent.getNodeType() == Node.ELEMENT_NODE) {
+            return parent;
+        }
+        return node.getNodeType() == Node.ELEMENT_NODE ? node : null;
     }
 
     @Override
@@ -238,11 +250,11 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         try {
             if (removeAllPending) {
                 removeAllPending = false;
-                removeDocument(document);
+                index.store().removeDocument(document.getDocId());
             }
             switch (listener.kind()) {
-                case FULL -> writeFullPass();
-                case SUBTREES -> removeSubtrees();
+                case FULL, SEEDED -> writePass();
+                case REMOVE -> removeSubtrees();
                 default -> { }
             }
         } catch (final IOException e) {
@@ -251,35 +263,114 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
     }
 
-    private void removeDocument(final DocumentImpl doc) throws IOException {
-        if (doc == null || doc.getCollection() == null) {
-            return;
-        }
-        final CollectionMeta meta = index.store().getCollectionMeta(doc.getCollection().getId());
-        if (meta != null) {
-            index.store().removeDocument(doc.getDocId(), meta.localTypeIds().values());
-        }
-    }
-
     private void removeSubtrees() throws IOException {
         final int docId = listener.docId();
-        final CollectionMeta meta = index.store().getCollectionMeta(document.getCollection().getId());
-        if (meta != null) {
-            for (final NodeId root : listener.removalRoots()) {
-                if (root.getTreeLevel() == 1) {
-                    index.store().removeAnnotations(docId, meta.localTypeIds().values());
-                    break;
-                }
-                index.store().removeNodes(docId, root);
+        for (final NodeId root : listener.removalRoots()) {
+            if (root.getTreeLevel() == 1) {
+                index.store().removeAnnotations(docId);
+                break;
             }
+            index.store().removeNodes(docId, root);
         }
         listener.reset();
     }
 
-    private void writeFullPass() throws IOException {
+    // --- seeds for partial assignment ---
+
+    /**
+     * Describe the parent of the root of a seeded pass: its stored annotation, path and in-scope namespaces.
+     *
+     * @param root an element below the root element, or an attribute
+     */
+    SchemaTypeStreamListener.Seed seedFor(final IStoredNode<?> root) {
+        try {
+            final IStoredNode parent = root.getParentStoredNode();
+            if (!(parent instanceof ElementImpl element) || config == null) {
+                return SchemaTypeStreamListener.Seed.UNANNOTATED;
+            }
+            final StoredAnnotation annotation = index.store().getAnnotation(document.getDocId(), element.getNodeId());
+            if (annotation == null) {
+                // an unannotated parent (unassignable, skip or lax content, or removed): nothing below is typed
+                return SchemaTypeStreamListener.Seed.UNANNOTATED;
+            }
+            final LocalTypeTable table = index.table(document.getCollection().getId(), config.schema());
+            final int code = table.codeOf(annotation.localTypeId());
+            final XSTypeDefinition type = code < 0 ? null : definitionOf(code, config);
+            if (type == null) {
+                return SchemaTypeStreamListener.Seed.UNANNOTATED;
+            }
+            final Map<QName, Integer> preceding = root.getNodeType() == Node.ELEMENT_NODE
+                    ? Map.of(root.getQName(), precedingSameName(element, root)) : Map.of();
+            return new SchemaTypeStreamListener.Seed(type, annotation.nilled(), pathOf(element), preceding, inScope(element));
+        } catch (final IOException e) {
+            LOG.error("Error reading the schema type index: {}", e.getMessage(), e);
+            return SchemaTypeStreamListener.Seed.UNANNOTATED;
+        }
+    }
+
+    private static @Nullable XSTypeDefinition definitionOf(final int code, final SchemaTypeConfig cfg) {
+        final UserDefinedType userType = UserTypeRegistry.get(code);
+        if (userType != null) {
+            return userType.definition();
+        }
+        final QName name = LocalTypeTable.typeNameOf(code);
+        return name == null ? null : cfg.schema().namedType(name).orElse(null);
+    }
+
+    /** the path of a stored element, as in {@link TypeAssigner.Assignment#path()} */
+    private static String pathOf(final ElementImpl element) {
+        final Deque<String> steps = new ArrayDeque<>();
+        IStoredNode current = element;
+        while (current instanceof ElementImpl e) {
+            final IStoredNode parent = e.getParentStoredNode();
+            final int position = parent instanceof ElementImpl p ? precedingSameName(p, e) + 1 : 1;
+            steps.push(e.getQName().getStringValue() + '[' + position + ']');
+            current = parent;
+        }
+        final StringBuilder path = new StringBuilder();
+        for (final String step : steps) {
+            path.append('/').append(step);
+        }
+        return path.toString();
+    }
+
+    /** the number of element children of {@code parent} before {@code child} with the same name as {@code child} */
+    private static int precedingSameName(final ElementImpl parent, final IStoredNode<?> child) {
+        final NodeList children = parent.getChildNodes();
+        int count = 0;
+        for (int i = 0; i < children.getLength(); i++) {
+            final IStoredNode<?> sibling = (IStoredNode<?>) children.item(i);
+            if (sibling.getNodeId().equals(child.getNodeId())) {
+                break;
+            }
+            if (sibling.getNodeType() == Node.ELEMENT_NODE && sibling.getQName().equals(child.getQName())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** the namespaces in scope at a stored element */
+    private static Map<String, String> inScope(final ElementImpl element) {
+        final Map<String, String> scope = new HashMap<>();
+        IStoredNode current = element;
+        while (current instanceof ElementImpl e) {
+            for (final Iterator<String> prefixes = e.getPrefixes(); prefixes.hasNext(); ) {
+                final String prefix = prefixes.next();
+                scope.putIfAbsent(prefix, e.getNamespaceForPrefix(prefix));
+            }
+            current = e.getParentStoredNode();
+        }
+        return scope;
+    }
+
+    // --- writing ---
+
+    private void writePass() throws IOException {
         final SchemaTypeConfig cfg = listener.config();
         final int docId = listener.docId();
         final int collectionId = document.getCollection().getId();
+        final boolean full = listener.kind() == SchemaTypeStreamListener.PassKind.FULL;
         final List<SchemaTypeStreamListener.Pending> work = listener.takePending();
 
         // the stable ids of the types to persist; types without one are left unannotated
@@ -289,7 +380,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final TypeAssigner.Assignment a = p.assignment();
             if (a.status() == TypeAssigner.Status.UNASSIGNABLE) {
                 unassignable.add(a.path());
-            } else if (!typeIds.containsKey(a.typeCode()) && !isDefault(a)) {
+            } else if (!typeIds.containsKey(a.typeCode())) {
                 final String typeId = LocalTypeTable.typeIdOf(a.typeCode());
                 if (typeId != null && LocalTypeTable.isStable(typeId)) {
                     typeIds.put(a.typeCode(), typeId);
@@ -301,7 +392,11 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         final LocalTypeTable table = index.allocate(collectionId, cfg.schema(), new LinkedHashSet<>(typeIds.values()));
         final TypeIndexStore store = index.store();
         if (listener.takeClear()) {
-            store.removeAnnotations(docId, table.allLocalIds());
+            if (full) {
+                store.removeAnnotations(docId);
+            } else {
+                store.removeNodes(docId, listener.rootId());
+            }
         }
 
         final Map<Short, List<Member>> members = new LinkedHashMap<>();
@@ -338,12 +433,43 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         if (listener.rootEnded()) {
             final List<String> paths = listener.unassignablePaths();
             final int count = listener.unassignableCount();
-            store.putDocMeta(docId, new DocMeta(cfg.schema().key(), count > 0 ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths));
+            if (full) {
+                store.putDocMeta(docId, new DocMeta(cfg.schema().key(),
+                        count > 0 ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths));
+            } else if (listener.rootPath() != null) {
+                updateDocMeta(docId, listener.rootPath(), paths, count);
+            }
             if (count > 0) {
                 LOG.warn("Document {} is partially typed by schema {}: {} unassignable node(s), e.g. {}",
                         document.getURI(), cfg.href(), count, paths.subList(0, Math.min(paths.size(), 5)));
             }
             listener.reset();
+        }
+    }
+
+    /**
+     * After a seeded pass: replace the unassignable paths recorded below the subtree root by the new ones.
+     */
+    private void updateDocMeta(final int docId, final String rootPath, final List<String> newPaths, final int newCount)
+            throws IOException {
+        final DocMeta meta = index.store().getDocMeta(docId);
+        if (meta == null) {
+            // not indexed as a whole (stale, see Task 9): leave it so
+            return;
+        }
+        // a full list may have dropped paths: it cannot become TYPED again
+        final boolean saturated = meta.unassignablePaths().size() >= DocMeta.MAX_PATHS;
+        final List<String> paths = new ArrayList<>();
+        for (final String path : meta.unassignablePaths()) {
+            if (!(path.equals(rootPath) || path.startsWith(rootPath + "/"))) {
+                paths.add(path);
+            }
+        }
+        paths.addAll(newPaths);
+        final boolean partial = saturated || newCount > newPaths.size() || !paths.isEmpty();
+        final DocMeta updated = new DocMeta(meta.indexedWith(), partial ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths);
+        if (!updated.equals(meta)) {
+            index.store().putDocMeta(docId, updated);
         }
     }
 
@@ -382,25 +508,15 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         return keys;
     }
 
-    /**
-     * Elements without a stored annotation are xs:anyType, attributes xs:untypedAtomic.
-     */
-    private static boolean isDefault(final TypeAssigner.Assignment a) {
-        if (a.nilled()) {
-            return false;
-        }
-        return a.nodeKind() == Node.ELEMENT_NODE ? a.typeCode() == Type.ANY_TYPE : a.typeCode() == Type.UNTYPED_ATOMIC;
-    }
-
     @Override
     public void removeCollection(final Collection collection, final DBBroker broker, final boolean configOnlyReindex) throws PermissionDeniedException {
+        // collections which never had entries are skipped without any I/O
+        if (!index.hasMeta(collection.getId())) {
+            return;
+        }
         try {
-            final CollectionMeta meta = index.store().getCollectionMeta(collection.getId());
-            if (meta == null) {
-                return;
-            }
             for (final Iterator<DocumentImpl> i = collection.iteratorNoLock(broker); i.hasNext(); ) {
-                index.store().removeDocument(i.next().getDocId(), meta.localTypeIds().values());
+                index.store().removeDocument(i.next().getDocId());
             }
             if (!configOnlyReindex) {
                 index.dropCollection(collection.getId());
