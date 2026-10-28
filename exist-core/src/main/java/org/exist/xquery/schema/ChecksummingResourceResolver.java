@@ -78,6 +78,9 @@ class ChecksummingResourceResolver implements LSResourceResolver {
     private final @Nullable LSResourceResolver catalogResolver;
     private final Map<String, byte[]> documents = new TreeMap<>();
     private @Nullable ResolutionException failure;
+    private final Map<String, Long> databaseVersions = new java.util.HashMap<>();
+    private final java.util.Set<String> catalogIds = new java.util.HashSet<>();
+    private boolean uncheckable;
 
     ChecksummingResourceResolver(final DBBroker broker, final boolean allowRemote, @Nullable final LSResourceResolver catalogResolver) {
         this.broker = broker;
@@ -88,6 +91,29 @@ class ChecksummingResourceResolver implements LSResourceResolver {
     /** @return the bytes of every resolved document, keyed (and ordered) by system ID */
     Map<String, byte[]> documents() {
         return documents;
+    }
+
+    /** @return database document id to last-modified time for every database document resolved */
+    Map<String, Long> databaseVersions() {
+        return databaseVersions;
+    }
+
+    /** @return true if some dependency (catalog, file or remote) cannot be cheaply re-validated */
+    boolean uncheckable() {
+        return uncheckable;
+    }
+
+    /** @return the last-modified time of the database document {@code id}, or -1 if it is not readable */
+    static long databaseVersion(final DBBroker broker, final String id) {
+        final String path = stripXmldbScheme(id);
+        if (path == null) {
+            return -1;
+        }
+        try (final LockedDocument locked = broker.getXMLResource(XmldbURI.create(path), LockMode.READ_LOCK)) {
+            return locked == null ? -1 : locked.getDocument().getLastModified();
+        } catch (final PermissionDeniedException | RuntimeException e) {
+            return -1;
+        }
     }
 
     /** @return the first resolution failure, if any occurred */
@@ -152,14 +178,26 @@ class ChecksummingResourceResolver implements LSResourceResolver {
                     return record(dbId, publicId, readFromDatabase(catalogDbPath, dbId));
                 }
                 checkRemote(id);
+                catalogIds.add(id);
+                uncheckable = true;
                 return record(id, publicId, readAll(catalogued, id));
             }
         }
 
-        // 3) anything else, directly by URL
+        // 3) direct fetch: only http(s), and only when remote access is enabled; or a relative
+        //    reference from a document that the catalog supplied
         final String absolute = absolutize(systemId, baseURI);
-        checkRemote(absolute);
+        final String scheme = schemeOf(absolute);
+        final boolean http = "http".equals(scheme) || "https".equals(scheme);
+        final boolean relativeToCatalogued = baseURI != null && catalogIds.contains(baseURI) && schemeOf(systemId) == null
+                && "file".equals(scheme);
+        if (http) {
+            checkRemote(absolute);
+        } else if (!relativeToCatalogued) {
+            throw new ResolutionException("schema location not permitted (only database, catalog and, if enabled, http(s) sources are allowed): " + absolute, absolute, null);
+        }
         try (final InputStream is = URI.create(absolute).toURL().openStream()) {
+            uncheckable = true;
             return record(absolute, publicId, is.readAllBytes());
         } catch (final IOException | IllegalArgumentException e) {
             throw new ResolutionException("unable to read schema document " + absolute + ": " + e.getMessage(), absolute, e);
@@ -261,6 +299,7 @@ class ChecksummingResourceResolver implements LSResourceResolver {
                 throw new ResolutionException("schema document not found: " + id, id, null);
             }
             final DocumentImpl doc = locked.getDocument();
+            databaseVersions.put(id, doc.getLastModified());
             if (doc instanceof BinaryDocument binary) {
                 try (final InputStream is = broker.getBinaryResource(binary)) {
                     return is.readAllBytes();

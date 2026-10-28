@@ -150,4 +150,40 @@ public class SchemaRegistryTest {
         assertEquals(35, e.line());
         assertEquals(BASE + "broken.xsd", e.systemId());
     }
+
+    private static String includingSchema(final String location) {
+        return "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" targetNamespace=\"urn:inc\">"
+                + "<xs:include schemaLocation=\"" + location + "\"/></xs:schema>";
+    }
+
+    @Test
+    void fileIncludeFromDatabaseSchemaRejected() throws Exception {
+        storeContent("file-include.xsd", includingSchema("file:///etc/hosts"), false);
+        final SchemaLoadException e = assertThrows(SchemaLoadException.class, () -> load(BASE + "file-include.xsd"));
+        assertTrue(e.getMessage().contains("file:///etc/hosts"), e.getMessage());
+    }
+
+    @Test
+    void jarWrappedRemoteIncludeRejected() throws Exception {
+        storeContent("jar-include.xsd", includingSchema("jar:http://schemas.invalid/x.jar!/a.xsd"), false);
+        final SchemaLoadException e = assertThrows(SchemaLoadException.class, () -> load(BASE + "jar-include.xsd"));
+        assertTrue(e.getMessage().contains("jar:http://schemas.invalid/x.jar!/a.xsd"), e.getMessage());
+    }
+
+    @Test
+    void unchangedSchemaIsNotReparsed() throws SchemaLoadException {
+        final CompiledSchema first = load(TRADE);
+        final int parses = registry.parseCount();
+        assertSame(first, load(TRADE));
+        assertEquals(parses, registry.parseCount());
+    }
+
+    @Test
+    void editedIncludeForcesReparse() throws Exception {
+        load(TRADE);
+        final int parses = registry.parseCount();
+        storeContent("trade-common.xsd", fixture("trade-common.xsd").replace("</xs:schema>", "<!-- again --></xs:schema>"), false);
+        load(TRADE);
+        assertEquals(parses + 1, registry.parseCount());
+    }
 }

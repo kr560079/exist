@@ -69,6 +69,9 @@ public class SchemaRegistry implements BrokerPoolService {
     private @Nullable LSResourceResolver catalogResolver;
     // guarded by lock; access-ordered so that eldest = least recently used
     private LinkedHashMap<SchemaKey, CompiledSchema> cache;
+    // guarded by lock; remembers what a (location, allowRemote) resolved to, so unchanged schemas are not re-parsed
+    private LinkedHashMap<MemoKey, MemoEntry> memo = newMemo();
+    private final java.util.concurrent.atomic.AtomicInteger parseCount = new java.util.concurrent.atomic.AtomicInteger();
 
     public SchemaRegistry() {
         this(DEFAULT_CACHE_SIZE);
@@ -83,15 +86,49 @@ public class SchemaRegistry implements BrokerPoolService {
         return new LinkedHashMap<>(16, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(final Map.Entry<SchemaKey, CompiledSchema> eldest) {
+                if (size() > cacheSize) {
+                    memo.values().removeIf(m -> m.key.equals(eldest.getKey()));
+                    return true;
+                }
+                return false;
+            }
+        };
+    }
+
+    private LinkedHashMap<MemoKey, MemoEntry> newMemo() {
+        return new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<MemoKey, MemoEntry> eldest) {
                 return size() > cacheSize;
             }
         };
+    }
+
+    private record MemoKey(String href, boolean allowRemote) {
+    }
+
+    /** The key a location resolved to, and the version of every database document it depended on. */
+    private record MemoEntry(SchemaKey key, Map<String, Long> versions) {
+        boolean isCurrent(final DBBroker broker) {
+            for (final Map.Entry<String, Long> dep : versions.entrySet()) {
+                if (ChecksummingResourceResolver.databaseVersion(broker, dep.getKey()) != dep.getValue()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /** @return how many full schema parses have been performed (for tests) */
+    int parseCount() {
+        return parseCount.get();
     }
 
     @Override
     public void configure(final Configuration configuration) {
         synchronized (lock) {
             this.cacheSize = Math.max(1, configuration.getInteger(PROPERTY_CACHE_SIZE, DEFAULT_CACHE_SIZE));
+            this.memo = newMemo();
             this.cache = newCache();
         }
         final Object resolver = configuration.getProperty(XMLReaderObjectFactory.CATALOG_RESOLVER);
@@ -108,6 +145,20 @@ public class SchemaRegistry implements BrokerPoolService {
      * @throws SchemaLoadException if the schema cannot be read, is not valid or uses a forbidden construct
      */
     public CompiledSchema load(final DBBroker broker, final String href, final boolean allowRemote) throws SchemaLoadException {
+        final MemoKey memoKey = new MemoKey(href, allowRemote);
+        final MemoEntry memoEntry;
+        synchronized (lock) {
+            memoEntry = memo.get(memoKey);
+        }
+        if (memoEntry != null && memoEntry.isCurrent(broker)) {
+            synchronized (lock) {
+                final CompiledSchema cached = cache.get(memoEntry.key);
+                if (cached != null) {
+                    return cached;
+                }
+            }
+        }
+        parseCount.incrementAndGet();
         final ChecksummingResourceResolver resolver = new ChecksummingResourceResolver(broker, allowRemote, catalogResolver);
         final LocatingErrorHandler errors = new LocatingErrorHandler();
 
@@ -115,8 +166,16 @@ public class SchemaRegistry implements BrokerPoolService {
         try {
             final XMLSchemaLoader loader = new XMLSchemaLoader();
             setFeature(loader, FEATURE_DISALLOW_DOCTYPE, true);
-            setFeature(loader, FEATURE_EXTERNAL_GENERAL_ENTITIES, false);
-            setFeature(loader, FEATURE_EXTERNAL_PARAMETER_ENTITIES, false);
+            // The schema loader does not recognise the external-entity features; they cannot matter
+            // because DOCTYPE declarations (hence entity declarations) are rejected above. If a
+            // future Xerces does recognise them, they must be set, and failing to do so is fatal.
+            final java.util.List<String> recognized = java.util.Arrays.asList(loader.getRecognizedFeatures());
+            if (recognized.contains(FEATURE_EXTERNAL_GENERAL_ENTITIES)) {
+                setFeature(loader, FEATURE_EXTERNAL_GENERAL_ENTITIES, false);
+            }
+            if (recognized.contains(FEATURE_EXTERNAL_PARAMETER_ENTITIES)) {
+                setFeature(loader, FEATURE_EXTERNAL_PARAMETER_ENTITIES, false);
+            }
             loader.setErrorHandler(errors);
             loader.setParameter("resource-resolver", resolver);
             final LSInput root = resolver.resolveRoot(href);
@@ -145,6 +204,11 @@ public class SchemaRegistry implements BrokerPoolService {
 
         final SchemaKey key = checksum(resolver.documents());
         synchronized (lock) {
+            if (resolver.uncheckable()) {
+                memo.remove(memoKey);
+            } else {
+                memo.put(memoKey, new MemoEntry(key, Map.copyOf(resolver.databaseVersions())));
+            }
             final CompiledSchema cached = cache.get(key);
             if (cached != null) {
                 return cached;
@@ -183,11 +247,12 @@ public class SchemaRegistry implements BrokerPoolService {
         }
     }
 
-    private static void setFeature(final XMLSchemaLoader loader, final String feature, final boolean value) {
+    /** Fails closed: a security feature that cannot be set means the schema must not be loaded. */
+    private static void setFeature(final XMLSchemaLoader loader, final String feature, final boolean value) throws SchemaLoadException {
         try {
             loader.setFeature(feature, value);
         } catch (final RuntimeException e) {
-            LOG.warn("Schema loader does not support feature {}: {}", feature, e.getMessage());
+            throw new SchemaLoadException("unable to configure secure schema loading (" + feature + "): " + e.getMessage(), null, -1, -1, e);
         }
     }
 
