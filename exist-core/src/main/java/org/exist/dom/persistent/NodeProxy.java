@@ -37,6 +37,9 @@ import org.exist.storage.serializers.Serializer;
 import org.exist.util.LockException;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.*;
+import org.exist.xquery.schema.TypeAnnotation;
+import org.exist.xquery.schema.TypeAnnotationProvider;
+import org.exist.xquery.schema.TypedValues;
 import org.exist.xquery.value.*;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -730,24 +733,28 @@ public class NodeProxy implements NodeSet, NodeValue, NodeHandle, DocumentSet, C
 
     public String getNodeValue() {
         try(final DBBroker broker = doc.getBrokerPool().getBroker()) {
-            if(isDocument()) {
-                final Element e = doc.getDocumentElement();
-                if(e instanceof NodeProxy) {
-                    return broker.getNodeValue(((StoredNode) e).extract(), false);
-                } else if(e != null) {
-                    return broker.getNodeValue((ElementImpl) e, false);
-                } else
-                // probably a binary resource
-                {
-                    return "";
-                }
-            } else {
-                return broker.getNodeValue(this.asStoredNode(), false);
-            }
+            return getNodeValue(broker);
         } catch(final EXistException e) {
             //TODO : raise an exception here ! -pb
         }
         return "";
+    }
+
+    private String getNodeValue(final DBBroker broker) {
+        if(isDocument()) {
+            final Element e = doc.getDocumentElement();
+            if(e instanceof NodeProxy) {
+                return broker.getNodeValue(((StoredNode) e).extract(), false);
+            } else if(e != null) {
+                return broker.getNodeValue((ElementImpl) e, false);
+            } else
+            // probably a binary resource
+            {
+                return "";
+            }
+        } else {
+            return broker.getNodeValue(this.asStoredNode(), false);
+        }
     }
 
     //TODO this should be improved. Consider an interface that contains just the
@@ -769,12 +776,95 @@ public class NodeProxy implements NodeSet, NodeValue, NodeHandle, DocumentSet, C
 
     @Override
     public AtomicValue convertTo(final int requiredType) throws XPathException {
-        return UntypedAtomicValue.convertTo(getNodeValue(), requiredType, null);
+        try (final DBBroker broker = doc.getBrokerPool().getBroker()) {
+            final TypeAnnotation annotation = getTypeAnnotation(broker);
+            if (annotation == null) {
+                return UntypedAtomicValue.convertTo(getNodeValue(broker), requiredType, null);
+            }
+            return first(typedValue(broker, annotation)).convertTo(requiredType);
+        } catch (final EXistException e) {
+            return UntypedAtomicValue.convertTo("", requiredType, null);
+        }
     }
 
+    /**
+     * Atomize the node: its typed value if the node has a type annotation in the schema type index, otherwise
+     * {@code xs:untypedAtomic}. Returns the first item of a typed value which is a sequence (list types, see
+     * {@link #typedValue()}), and {@link AtomicValue#EMPTY_VALUE} for an empty one (nilled elements).
+     */
     @Override
     public AtomicValue atomize() throws XPathException {
-        return new UntypedAtomicValue(getNodeValue());
+        try (final DBBroker broker = doc.getBrokerPool().getBroker()) {
+            final TypeAnnotation annotation = getTypeAnnotation(broker);
+            if (annotation == null) {
+                return new UntypedAtomicValue(getNodeValue(broker));
+            }
+            return first(typedValue(broker, annotation));
+        } catch (final EXistException e) {
+            return new UntypedAtomicValue("");
+        }
+    }
+
+    /**
+     * Get the typed value of the node: like {@link #atomize()}, but the whole sequence for list types, and the
+     * empty sequence for nilled elements and elements with empty content.
+     *
+     * @return the typed value
+     * @throws XPathException {@code FOTY0012} if the node has element-only content, {@code EXSA0002} or
+     *         {@code EXSA0003} if the type annotation cannot be determined
+     */
+    public Sequence typedValue() throws XPathException {
+        try (final DBBroker broker = doc.getBrokerPool().getBroker()) {
+            final TypeAnnotation annotation = getTypeAnnotation(broker);
+            if (annotation == null) {
+                return new UntypedAtomicValue(getNodeValue(broker));
+            }
+            return typedValue(broker, annotation);
+        } catch (final EXistException e) {
+            return new UntypedAtomicValue("");
+        }
+    }
+
+    /**
+     * Get the type annotation of the node from the schema type index.
+     *
+     * @return null if the schema type index is not configured or the collection of the document has no schema,
+     *         i.e. the node is unannotated as without the index
+     * @throws XPathException {@code EXSA0002} if the schema is unavailable, {@code EXSA0003} if the index is stale
+     */
+    public @Nullable TypeAnnotation getTypeAnnotation() throws XPathException {
+        if (!mayBeAnnotated()) {
+            return null;
+        }
+        try (final DBBroker broker = doc.getBrokerPool().getBroker()) {
+            return getTypeAnnotation(broker);
+        } catch (final EXistException e) {
+            return null;
+        }
+    }
+
+    private @Nullable TypeAnnotation getTypeAnnotation(final DBBroker broker) throws XPathException {
+        if (!mayBeAnnotated()) {
+            return null;
+        }
+        final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
+        return provider == null ? null : provider.annotationOf(this);
+    }
+
+    /** only elements and attributes carry type annotations */
+    private boolean mayBeAnnotated() {
+        return nodeType == Node.ELEMENT_NODE || nodeType == Node.ATTRIBUTE_NODE || nodeType == UNKNOWN_NODE_TYPE;
+    }
+
+    private Sequence typedValue(final DBBroker broker, final TypeAnnotation annotation) throws XPathException {
+        if (annotation.nilled()) {
+            return Sequence.EMPTY_SEQUENCE;
+        }
+        return TypedValues.fromLexical(getNodeValue(broker), annotation.typeCode(), null);
+    }
+
+    private static AtomicValue first(final Sequence typedValue) {
+        return typedValue.isEmpty() ? AtomicValue.EMPTY_VALUE : (AtomicValue) typedValue.itemAt(0);
     }
 
     @Override

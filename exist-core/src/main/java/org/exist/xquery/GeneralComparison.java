@@ -523,7 +523,14 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
     protected Sequence genericCompare( Sequence ls, Sequence contextSequence, Item contextItem ) throws XPathException
     {
         final long           start    = System.currentTimeMillis();
-        final Sequence rs       = getRight().eval( contextSequence, contextItem );
+        Sequence       rs       = getRight().eval( contextSequence, contextItem );
+        // the typed value of a single stored node may be several items (list types) or none (nilled elements)
+        if( ls.hasOne() && ls.itemAt( 0 ) instanceof NodeProxy ) {
+            ls = Atomize.atomize( ls );
+        }
+        if( rs.hasOne() && rs.itemAt( 0 ) instanceof NodeProxy ) {
+            rs = Atomize.atomize( rs );
+        }
         final Collator collator = getCollator( contextSequence );
         Sequence       result   = BooleanValue.FALSE;
 

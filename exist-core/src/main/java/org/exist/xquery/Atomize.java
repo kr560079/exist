@@ -22,6 +22,7 @@
 package org.exist.xquery;
 
 import org.exist.dom.persistent.DocumentSet;
+import org.exist.dom.persistent.NodeProxy;
 import org.exist.xquery.functions.array.ArrayType;
 import org.exist.xquery.util.ExpressionDumper;
 import org.exist.xquery.value.Item;
@@ -75,15 +76,26 @@ public class Atomize extends AbstractExpression {
         if (input.isEmpty())
             {return Sequence.EMPTY_SEQUENCE;}
         input = ArrayType.flatten(input);
-        if (input.hasOne()) {return
-            input.itemAt(0).atomize();
+        if (input.hasOne()) {
+            final Item item = input.itemAt(0);
+            // a stored node's typed value may be a sequence (list types) or empty (nilled elements)
+            return item instanceof NodeProxy node ? node.typedValue() : item.atomize();
         }
 
         Item next;
         final ValueSequence result = new ValueSequence();
         for(final SequenceIterator i = input.iterate(); i.hasNext(); ) {
             next = i.nextItem();
-            result.add(next.atomize());
+            if (next instanceof NodeProxy node) {
+                final Sequence typedValue = node.typedValue();
+                if (typedValue instanceof Item atomic) {
+                    result.add(atomic);
+                } else {
+                    result.addAll(typedValue);
+                }
+            } else {
+                result.add(next.atomize());
+            }
         }
         return result;
     }

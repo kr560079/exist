@@ -70,6 +70,7 @@ public class SchemaTypeIndexTest {
     private static final XmldbURI ST2 = XmldbURI.create("/db/st2");
     private static final XmldbURI CONF2 = XmldbURI.create("/db/system/config/db/st2");
     private static final XmldbURI PLAIN2 = XmldbURI.create("/db/plain2");
+    private static final XmldbURI CONF_PLAIN2 = XmldbURI.create("/db/system/config/db/plain2");
 
     private static final String XCONF = "<collection xmlns='" + CC + "'><index xmlns:t='" + T_NS
             + "' xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
@@ -105,7 +106,7 @@ public class SchemaTypeIndexTest {
     @AfterEach
     void tearDown() throws Exception {
         try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF2, ST, ST2, SCHEMAS, PLAIN, PLAIN2}) {
+            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF2, CONF_PLAIN2, ST, ST2, SCHEMAS, PLAIN, PLAIN2}) {
                 final Collection col = broker.getCollection(uri);
                 if (col != null) {
                     broker.removeCollection(txn, col);
@@ -341,6 +342,31 @@ public class SchemaTypeIndexTest {
         query("xmldb:remove('/db/plain', 'r.xml')");
         query("xmldb:remove('/db/plain2')");
         assertEquals(before, index().store().accessCount());
+    }
+
+    @Test
+    void atomizationInUnconfiguredCollectionDoesNoIndexIo() throws Exception {
+        // warm up the configured collection, so the cached configuration must be looked up again for /db/plain
+        assertEquals(1, query("data(doc('/db/st/t1.xml')//t:amount)").getItemCount());
+        final long before = index().store().accessCount();
+        final Sequence values = query("data(doc('/db/plain/r.xml')//(a | @x)), doc('/db/plain/r.xml')//@x = 1");
+        assertEquals(Type.UNTYPED_ATOMIC, values.itemAt(0).getType());
+        assertEquals(before, index().store().accessCount());
+    }
+
+    @Test
+    void annotationSeesConfigurationAddedAfterLookup() throws Exception {
+        store(PLAIN2, "t1.xml", T1);
+        final NodeProxy amount = node("/db/plain2/t1.xml", "/t:trade/t:notional/t:amount");
+        // caches "no schema" for the collection
+        assertNull(provider().annotationOf(amount));
+
+        store(CONF_PLAIN2, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
+
+        // the document was stored before the collection was configured: stale, not unannotated
+        final org.exist.xquery.XPathException stale = assertThrows(org.exist.xquery.XPathException.class,
+                () -> provider().annotationOf(amount));
+        assertTrue(stale.getMessage().contains("EXSA0003") || stale.getErrorCode().getErrorQName().getLocalPart().equals("EXSA0003"));
     }
 
     @Test

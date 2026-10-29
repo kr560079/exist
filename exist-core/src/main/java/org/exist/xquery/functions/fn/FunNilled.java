@@ -22,6 +22,7 @@
 package org.exist.xquery.functions.fn;
 
 import org.exist.xquery.*;
+import org.exist.xquery.schema.TypeAnnotations;
 import org.exist.xquery.value.*;
 
 import static org.exist.xquery.FunctionDSL.param;
@@ -89,16 +90,9 @@ public class FunNilled extends BasicFunction {
 			return Sequence.EMPTY_SEQUENCE;
 		}
 
-		// NOTE(AR) should only be used if the node has been validated against a Schema, which at this time eXist-db does not support.
-//		final Node n = ((NodeValue) arg).getNode();
-//		if (n.hasAttributes()) {
-//			final Node nilled = n.getAttributes().getNamedItemNS(Namespaces.SCHEMA_INSTANCE_NS, "nil");
-//			if (nilled != null) {
-//				return new BooleanValue(this, nilled.getNodeValue().equals("true"));
-//			}
-//		}
-
-		return BooleanValue.FALSE;
+		// an element is nilled only if its type annotation says so: xsi:nil is honoured only on stored elements of
+		// collections with a schema, whose nillable declarations the schema type index checked
+		return BooleanValue.valueOf(TypeAnnotations.annotationOf(context, (NodeValue) arg).nilled());
 		
 	}
 

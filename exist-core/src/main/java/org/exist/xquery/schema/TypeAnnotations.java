@@ -21,6 +21,7 @@
  */
 package org.exist.xquery.schema;
 
+import org.exist.dom.persistent.NodeProxy;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.XQueryContext;
 import org.exist.xquery.value.NodeValue;
@@ -30,8 +31,9 @@ import org.w3c.dom.Node;
 /**
  * Looks up and tests the type annotation of nodes.
  *
- * <p>No collection has a schema yet, so every node is unannotated: elements are
- * {@code xs:untyped} and attributes {@code xs:untypedAtomic}.</p>
+ * <p>Stored nodes of collections configured with the schema type index carry the annotation stored in the index
+ * (see {@link TypeAnnotationProvider}); every other node is unannotated: elements are {@code xs:untyped} and
+ * attributes {@code xs:untypedAtomic}.</p>
  */
 public final class TypeAnnotations {
 
@@ -47,6 +49,12 @@ public final class TypeAnnotations {
      * @throws XPathException if the annotation cannot be determined
      */
     public static TypeAnnotation annotationOf(final XQueryContext ctx, final NodeValue node) throws XPathException {
+        if (node instanceof NodeProxy proxy) {
+            final TypeAnnotation annotation = proxy.getTypeAnnotation();
+            if (annotation != null) {
+                return annotation;
+            }
+        }
         int kind = node.getType();
         if (kind == Type.NODE) {
             kind = Type.fromDomNodeType(node.getNode().getNodeType());

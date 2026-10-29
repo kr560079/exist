@@ -49,6 +49,7 @@ import org.xml.sax.XMLReader;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
 
 /**
@@ -79,6 +80,9 @@ public class CollectionConfigurationManager implements BrokerPoolService {
     private final ReadWriteLock lock = new java.util.concurrent.locks.ReentrantReadWriteLock();
 
     private final CollectionConfiguration defaultConfig;
+
+    /** incremented whenever a configuration is added or removed, see {@link #getGeneration()} */
+    private final AtomicLong generation = new AtomicLong();
 
     public CollectionConfigurationManager(final BrokerPool brokerPool) {
         this.defaultConfig = new CollectionConfiguration(brokerPool);
@@ -278,6 +282,7 @@ public class CollectionConfigurationManager implements BrokerPoolService {
 
                     try(final ManagedLock<ReadWriteLock> writeLock = ManagedLock.acquire(lock, LockMode.WRITE_LOCK)) {
                         configurations.put(new CollectionURI(configCollection.getURI().getRawCollectionPath()), conf);
+                        generation.incrementAndGet();
                     }
 
                     // Allow just one configuration document per collection
@@ -286,6 +291,17 @@ public class CollectionConfigurationManager implements BrokerPoolService {
                 }
             }
         }
+    }
+
+    /**
+     * Get the generation of the configurations: a number which changes whenever a configuration is added or removed.
+     * Lets callers cache the configuration of a collection (which {@link Collection#getConfiguration(DBBroker)} looks
+     * up by walking the path of the collection) for as long as the generation is unchanged.
+     *
+     * @return the generation
+     */
+    public long getGeneration() {
+        return generation.get();
     }
 
     public CollectionConfiguration getOrCreateCollectionConfiguration(final DBBroker broker, final Collection collection) {
@@ -307,6 +323,7 @@ public class CollectionConfigurationManager implements BrokerPoolService {
 
             conf = new CollectionConfiguration(broker.getBrokerPool());
             configurations.put(path, conf);
+            generation.incrementAndGet();
 
             return conf;
         }
@@ -338,6 +355,7 @@ public class CollectionConfigurationManager implements BrokerPoolService {
             String str = uri.toString();
 
             configurations.entrySet().removeIf(entry -> entry.getKey().toString().startsWith(str));
+            generation.incrementAndGet();
         }
     }
 
@@ -359,6 +377,7 @@ public class CollectionConfigurationManager implements BrokerPoolService {
             }
 
             configurations.remove(new CollectionURI(collectionPath.getRawCollectionPath()));
+            generation.incrementAndGet();
         }
     }
 

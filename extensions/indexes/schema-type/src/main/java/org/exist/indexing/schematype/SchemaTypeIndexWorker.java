@@ -26,6 +26,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.xerces.xs.XSTypeDefinition;
 import org.exist.EXistException;
 import org.exist.collections.Collection;
+import org.exist.collections.CollectionConfigurationManager;
 import org.exist.dom.QName;
 import org.exist.dom.persistent.DefaultDocumentSet;
 import org.exist.dom.persistent.DocumentImpl;
@@ -113,6 +114,16 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     private boolean tolerant;
     /** the current document is being removed: drop its entries on the next flush */
     private boolean removeAllPending;
+
+    /*
+     * The configuration of the collection of the last node whose annotation was looked up: atomization asks for the
+     * annotation of every node, and looking the configuration up walks the collection's path. Valid while the
+     * collection, its path and the generation of the collection configurations are unchanged.
+     */
+    private @Nullable Collection annotationCollection;
+    private @Nullable XmldbURI annotationCollectionUri;
+    private long annotationConfigGeneration;
+    private @Nullable SchemaTypeConfig annotationConfig;
 
     private record CacheKey(int docId, String nodeId) {
     }
@@ -634,7 +645,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     @Override
     public @Nullable TypeAnnotation annotationOf(final NodeProxy node) throws XPathException {
         final DocumentImpl doc = node.getOwnerDocument();
-        final SchemaTypeConfig cfg = configOf(doc.getCollection());
+        final SchemaTypeConfig cfg = annotationConfigOf(doc.getCollection());
         if (cfg == null) {
             return null;
         }
@@ -657,6 +668,28 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         } catch (final IOException e) {
             throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * {@link #configOf(Collection)} for {@link #annotationOf(NodeProxy)}, cached: no lookup (and no allocation) for
+     * the nodes of a collection after the first while the configurations are unchanged.
+     */
+    private @Nullable SchemaTypeConfig annotationConfigOf(@Nullable final Collection collection) {
+        if (collection == null) {
+            return null;
+        }
+        final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
+        final long generation = manager == null ? 0 : manager.getGeneration();
+        if (collection == annotationCollection && collection.getURI() == annotationCollectionUri
+                && generation == annotationConfigGeneration) {
+            return annotationConfig;
+        }
+        final SchemaTypeConfig cfg = configOf(collection);
+        annotationCollection = collection;
+        annotationCollectionUri = collection.getURI();
+        annotationConfigGeneration = generation;
+        annotationConfig = cfg;
+        return cfg;
     }
 
     private @Nullable StoredAnnotation lookup(final int docId, final NodeId nodeId) throws IOException {
