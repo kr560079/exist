@@ -64,11 +64,18 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <tr><td>{@code 0x01}</td><td>docId</td><td>{@link DocMeta}</td></tr>
  *   <tr><td>{@code 0x02}</td><td>docId, nodeId</td><td>localTypeId (short), flags (bit 0 = nilled)</td></tr>
  *   <tr><td>{@code 0x03}</td><td>localTypeId, docId</td><td>node list</td></tr>
- *   <tr><td>{@code 0x04}</td><td>collectionId, localTypeId, {@link TypedKeys typed key}, docId</td><td>node list</td></tr>
- *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, typed key</td><td>collectionId: the {@code 0x04} keys of a document,
- *       so that removing a document does not scan the typed values of all documents</td></tr>
+ *   <tr><td>{@code 0x04}</td><td colspan="2">legacy typed values (read only to remove them): localTypeId,
+ *       {@link org.exist.storage.Indexable#serializeValue} key, docId; or collectionId, localTypeId, typed key, docId</td></tr>
+ *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, value key</td><td>legacy: the {@code 0x04} keys of a document
+ *       (empty value, or the collectionId of the second layout)</td></tr>
  *   <tr><td>{@code 0x06}</td><td>docId, localTypeId</td><td>placeholder: the {@code 0x03} keys of a document, so that
  *       they are removed independently of the local type table of the document's current collection</td></tr>
+ *   <tr><td>{@code 0x07}</td><td>docId, {@linkplain NameKey name}</td><td>{@linkplain Summary summary} of the nodes
+ *       of the document with that name: the local types they are annotated with and whether one occurs twice
+ *       below one element</td></tr>
+ *   <tr><td>{@code 0x08}</td><td>docId, localTypeId, {@link TypedKeys typed key}</td><td>node list</td></tr>
+ *   <tr><td>{@code 0x09}</td><td>docId, {@linkplain NameKey name}</td><td>node list: the nodes of the document with
+ *       that name which are not annotated, or whose typed value has no key</td></tr>
  * </table>
  *
  * <p>Integers are big-endian. A node id in a key is its unit count (short) followed by its serialized bytes.
@@ -76,12 +83,14 @@ import java.util.concurrent.locks.ReentrantLock;
  * kind byte ({@link org.w3c.dom.Node#ELEMENT_NODE} or {@link org.w3c.dom.Node#ATTRIBUTE_NODE}) and a node id
  * written with prefix compression against the previous entry of the chunk.</p>
  *
- * <p>The typed keys of {@code 0x04} preserve the order of the values ({@link TypedKeys}), so that a comparison is a
- * range scan; local type ids are per collection, so the collection id comes first and a scan only reads the entries
- * of one collection. This layout (format 2, introduced with the typed-value comparisons) replaced one keyed by
- * {@code localTypeId} and {@link org.exist.storage.Indexable#serializeValue}, whose decimal keys did not sort
- * numerically: an index written before it must be rebuilt ({@code xmldb:reindex} of the collection); the index is
- * derived data and can always be rebuilt.</p>
+ * <p>The typed keys of {@code 0x08} preserve the order of the values ({@link TypedKeys}), so that a comparison is a
+ * range scan per document and type: a lookup reads only the entries of its documents. With the name summaries of
+ * {@code 0x07} it decides, per document, whether the typed values can answer a comparison. These tables replaced the
+ * typed values of {@code 0x04}/{@code 0x05}, keyed by {@link org.exist.storage.Indexable#serializeValue} (whose
+ * decimal keys did not sort numerically) and by value first: documents indexed before have no typed-value types in
+ * their {@link DocMeta}, comparisons over them are evaluated without the index until the collection is reindexed
+ * ({@code xmldb:reindex}; the index is derived data and can always be rebuilt), and their legacy rows are removed
+ * whenever their entries are.</p>
  *
  * <p>Every method takes the file's lock. Every write for a document advances that document's generation, which
  * readers use to invalidate cached annotations.</p>
@@ -92,9 +101,46 @@ final class TypeIndexStore {
     static final byte DOC_META = 0x01;
     static final byte ANNOTATION = 0x02;
     static final byte TYPE_MEMBERS = 0x03;
-    static final byte TYPED_VALUES = 0x04;
-    static final byte DOC_TYPED_KEYS = 0x05;
+    static final byte LEGACY_TYPED_VALUES = 0x04;
+    static final byte LEGACY_DOC_TYPED_KEYS = 0x05;
     static final byte DOC_MEMBER_KEYS = 0x06;
+    static final byte NAME_SUMMARY = 0x07;
+    static final byte TYPED_VALUES = 0x08;
+    static final byte UNTYPED_NODES = 0x09;
+
+    /**
+     * {@link Summary#flags()}: a node with the name is not annotated, or its typed value has no key; read from the
+     * {@link #UNTYPED_NODES} list of the name, which, unlike the summary, drops the nodes of a subtree reassigned
+     */
+    static final byte SUMMARY_UNTYPED = 0x01;
+    /** {@link Summary#flags()}: an element has two children with the name (or may have: the name of the root of an update) */
+    static final byte SUMMARY_REPEATED = 0x02;
+
+    /**
+     * The name of a node in a {@link #NAME_SUMMARY} key.
+     *
+     * @param kind {@link org.w3c.dom.Node#ELEMENT_NODE} or {@link org.w3c.dom.Node#ATTRIBUTE_NODE}
+     */
+    record NameKey(short kind, String namespace, String localName) {
+        static NameKey of(final short kind, final org.exist.dom.QName name) {
+            return new NameKey(kind, name.getNamespaceURI() == null ? "" : name.getNamespaceURI(), name.getLocalPart());
+        }
+
+        byte[] bytes() {
+            final byte[] ns = namespace.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            final byte[] local = localName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            final byte[] b = new byte[1 + ns.length + 1 + local.length];
+            b[0] = (byte) kind;
+            System.arraycopy(ns, 0, b, 1, ns.length);
+            b[1 + ns.length] = 0;
+            System.arraycopy(local, 0, b, 2 + ns.length, local.length);
+            return b;
+        }
+    }
+
+    /** the summary of the nodes with a name in a document */
+    record Summary(byte flags, Set<Short> localTypeIds) {
+    }
 
     private static final byte NILLED = 0x01;
     private static final byte[] EMPTY = {0};
@@ -219,19 +265,74 @@ final class TypeIndexStore {
     /**
      * Append nodes, in document order, to the node list of a typed value of a document.
      *
-     * @param collectionId the id of the document's collection, whose local type table {@code localTypeId} is from
-     * @param key          the typed key ({@link TypedKeys}), or {@code {UNINDEXABLE}}
+     * @param key the typed key ({@link TypedKeys})
      */
-    void putTypedValues(final int collectionId, final short localTypeId, final byte[] key, final int docId,
-            final List<Member> members) throws IOException {
+    void putTypedValues(final int docId, final short localTypeId, final byte[] key, final List<Member> members)
+            throws IOException {
         if (members.isEmpty()) {
             return;
         }
-        append(typedKey(collectionId, localTypeId, key, docId), encode(members));
-        final byte[] value = new byte[4];
-        ByteConversion.intToByteH(collectionId, value, 0);
-        put(docTypedKey(docId, localTypeId, key), value);
+        append(concat(typedPrefix(docId, localTypeId), key), encode(members));
         touched(docId);
+    }
+
+    /**
+     * Merge the summary of the nodes with a name into the document's: the union of the types and of the flags.
+     */
+    void mergeSummary(final int docId, final NameKey name, final byte flags, final Set<Short> localTypeIds) throws IOException {
+        final byte[] key = concat(intKey(NAME_SUMMARY, docId), name.bytes());
+        final Summary old = summary(get(key));
+        final Set<Short> types = new java.util.TreeSet<>(localTypeIds);
+        byte merged = (byte) (flags & ~SUMMARY_UNTYPED);
+        if (old != null) {
+            types.addAll(old.localTypeIds());
+            merged |= old.flags();
+            if (merged == old.flags() && types.equals(old.localTypeIds())) {
+                return;
+            }
+        }
+        final byte[] value = new byte[1 + 2 * types.size()];
+        value[0] = (byte) (merged & ~SUMMARY_UNTYPED);
+        int pos = 1;
+        for (final short t : types) {
+            ByteConversion.shortToByteH(t, value, pos);
+            pos += 2;
+        }
+        put(key, value);
+        touched(docId);
+    }
+
+    /**
+     * Record nodes with a name which are not annotated, or whose typed value has no key.
+     */
+    void addUntyped(final int docId, final NameKey name, final List<Member> nodes) throws IOException {
+        if (!nodes.isEmpty()) {
+            append(concat(intKey(UNTYPED_NODES, docId), name.bytes()), encode(nodes));
+            touched(docId);
+        }
+    }
+
+    /**
+     * @return the summary of the nodes with a name in a document, or null if it has none; its flags include
+     *         {@link #SUMMARY_UNTYPED} if some are untyped
+     */
+    @Nullable Summary getSummary(final int docId, final NameKey name) throws IOException {
+        final Summary summary = summary(get(concat(intKey(NAME_SUMMARY, docId), name.bytes())));
+        if (summary == null || get(concat(intKey(UNTYPED_NODES, docId), name.bytes())) == null) {
+            return summary;
+        }
+        return new Summary((byte) (summary.flags() | SUMMARY_UNTYPED), summary.localTypeIds());
+    }
+
+    private static @Nullable Summary summary(@Nullable final byte[] value) {
+        if (value == null || value.length < 1) {
+            return null;
+        }
+        final Set<Short> types = new java.util.TreeSet<>();
+        for (int pos = 1; pos + 1 < value.length; pos += 2) {
+            types.add(ByteConversion.byteToShortH(value, pos));
+        }
+        return new Summary(value[0], types);
     }
 
     // --- queries ---
@@ -278,49 +379,31 @@ final class TypeIndexStore {
     private static final int POINT_LOOKUP_DOCS = 16;
 
     /**
-     * The nodes of the given documents whose typed value has a key in a range.
+     * The nodes of the given documents whose typed value has a key in a range: one range scan per document and type.
      *
-     * @param collectionId the collection of the documents, whose local type table the type ids are from
-     * @param docs         documents of that collection
-     * @param localTypeIds the local types
+     * @param docs         the documents
+     * @param localTypeIds the local types (of each document's collection)
      * @param low          the scan starts at the first key starting with or greater than this (inclusive); a typed
-     *                     key or a prefix of one ({@link TypedKeys}), never null
+     *                     key or a prefix of one ({@link TypedKeys})
      * @param high         the scan ends after the last key starting with this (inclusive), a typed key or a prefix
      * @return the nodes, in document order, without duplicates
      */
-    NodeSet typedRange(final int collectionId, final DocumentSet docs, final short[] localTypeIds, final byte[] low,
-            final byte[] high) throws IOException {
+    NodeSet typedRange(final DocumentSet docs, final short[] localTypeIds, final byte[] low, final byte[] high)
+            throws IOException {
         final NodeSet result = new NewArrayNodeSet();
-        if (docs.getDocumentCount() == 0 || Arrays.compareUnsigned(low, high) > 0 && !startsWith(low, high)) {
+        if (Arrays.compareUnsigned(low, high) > 0 && !startsWith(low, high)) {
             return result;
         }
-        for (final short localTypeId : localTypeIds) {
-            final byte[] prefix = typedPrefix(collectionId, localTypeId);
-            final byte[] upper = successor(concat(prefix, high));
-            for (final byte[] key : keysBetween(concat(prefix, low), upper, prefix)) {
-                final DocumentImpl doc = docs.getDoc(ByteConversion.byteToIntH(key, key.length - 4));
-                if (doc != null) {
+        for (final Iterator<DocumentImpl> i = docs.getDocumentIterator(); i.hasNext(); ) {
+            final DocumentImpl doc = i.next();
+            for (final short localTypeId : localTypeIds) {
+                final byte[] prefix = typedPrefix(doc.getDocId(), localTypeId);
+                for (final byte[] key : keysBetween(concat(prefix, low), successor(concat(prefix, high)), prefix)) {
                     addAll(result, doc, get(key));
                 }
             }
         }
         return result;
-    }
-
-    /**
-     * @return true if a node of one of the documents of one of the local types has a typed value without key
-     *         ({@link TypedKeys#UNINDEXABLE})
-     */
-    boolean hasUnindexable(final int collectionId, final DocumentSet docs, final short[] localTypeIds) throws IOException {
-        for (final short localTypeId : localTypeIds) {
-            final byte[] prefix = concat(typedPrefix(collectionId, localTypeId), new byte[] {TypedKeys.UNINDEXABLE});
-            for (final byte[] key : keys(prefix, prefix)) {
-                if (key.length == prefix.length + 4 && docs.getDoc(ByteConversion.byteToIntH(key, prefix.length)) != null) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private static boolean startsWith(final byte[] key, final byte[] prefix) {
@@ -351,16 +434,13 @@ final class TypeIndexStore {
             remove(membersKey(ByteConversion.byteToShortH(key, 5), docId));
             remove(key);
         }
-        final byte[] typed = intKey(DOC_TYPED_KEYS, docId);
-        for (final byte[] key : keys(typed, typed)) {
-            final short localTypeId = ByteConversion.byteToShortH(key, 5);
-            final byte[] collectionId = get(key);
-            if (collectionId != null && collectionId.length == 4) {
-                remove(typedKey(ByteConversion.byteToIntH(collectionId, 0), localTypeId,
-                        Arrays.copyOfRange(key, 7, key.length), docId));
+        for (final byte table : new byte[] {TYPED_VALUES, NAME_SUMMARY, UNTYPED_NODES}) {
+            final byte[] prefix = intKey(table, docId);
+            for (final byte[] key : keys(prefix, prefix)) {
+                remove(key);
             }
-            remove(key);
         }
+        removeLegacyTypedValues(docId);
         touched(docId);
     }
 
@@ -388,19 +468,18 @@ final class TypeIndexStore {
                 remove(docMemberKey(docId, localTypeId));
             }
         }
-        final byte[] typed = intKey(DOC_TYPED_KEYS, docId);
+        // the name summaries are left as they are: still a superset of the remaining nodes' types and flags
+        final byte[] untyped = intKey(UNTYPED_NODES, docId);
+        for (final byte[] key : keys(untyped, untyped)) {
+            filter(key, subtreeRoot);
+        }
+        final byte[] typed = intKey(TYPED_VALUES, docId);
         for (final byte[] key : keys(typed, typed)) {
-            final short localTypeId = ByteConversion.byteToShortH(key, 5);
-            if (!affected.contains(localTypeId)) {
-                continue;
-            }
-            final byte[] collectionId = get(key);
-            if (collectionId == null || collectionId.length != 4
-                    || filter(typedKey(ByteConversion.byteToIntH(collectionId, 0), localTypeId,
-                            Arrays.copyOfRange(key, 7, key.length), docId), subtreeRoot)) {
-                remove(key);
+            if (affected.contains(ByteConversion.byteToShortH(key, 5))) {
+                filter(key, subtreeRoot);
             }
         }
+        removeLegacyTypedValues(docId);
         touched(docId);
     }
 
@@ -431,6 +510,54 @@ final class TypeIndexStore {
             put(key, encode(kept));
         }
         return false;
+    }
+
+    /**
+     * Remove the typed values of a document written in a legacy layout (see the class description), found through
+     * their {@code 0x05} rows.
+     */
+    private void removeLegacyTypedValues(final int docId) throws IOException {
+        final byte[] legacy = intKey(LEGACY_DOC_TYPED_KEYS, docId);
+        for (final byte[] key : keys(legacy, legacy)) {
+            final byte[] lt = Arrays.copyOfRange(key, 5, 7);
+            final byte[] valueKey = Arrays.copyOfRange(key, 7, key.length);
+            final byte[] doc = Arrays.copyOfRange(key, 1, 5);
+            final byte[] value = get(key);
+            if (value != null && value.length == 4) {
+                remove(concat(concat(concat(new byte[] {LEGACY_TYPED_VALUES}, value), concat(lt, valueKey)), doc));
+            } else {
+                remove(concat(concat(concat(new byte[] {LEGACY_TYPED_VALUES}, lt), valueKey), doc));
+            }
+            remove(key);
+        }
+    }
+
+    /**
+     * Count the rows of a document in the tables keyed by document id first, and its {@code 0x03} rows; for tests.
+     */
+    int rowCountByScan(final int docId) throws IOException {
+        int count = memberTypeIdsByScan(docId).size();
+        for (final byte table : new byte[] {ANNOTATION, LEGACY_DOC_TYPED_KEYS, DOC_MEMBER_KEYS, NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
+            final byte[] prefix = intKey(table, docId);
+            count += keys(prefix, prefix).size();
+        }
+        return count;
+    }
+
+    /** the number of rows of the legacy typed-value table ({@code 0x04}), for tests */
+    int legacyTypedValueRowCount() throws IOException {
+        final byte[] prefix = {LEGACY_TYPED_VALUES};
+        return keys(prefix, prefix).size();
+    }
+
+    /** write a row of the legacy layout, for tests of their removal */
+    void putLegacyTypedValue(final short localTypeId, final byte[] valueKey, final int docId, final NodeId id) throws IOException {
+        final byte[] lt = new byte[2];
+        ByteConversion.shortToByteH(localTypeId, lt, 0);
+        final byte[] doc = new byte[4];
+        ByteConversion.intToByteH(docId, doc, 0);
+        append(concat(concat(concat(new byte[] {LEGACY_TYPED_VALUES}, lt), valueKey), doc), encode(List.of(new Member(id, (short) 1))));
+        put(concat(concat(concat(new byte[] {LEGACY_DOC_TYPED_KEYS}, doc), lt), valueKey), EMPTY);
     }
 
     // --- node lists ---
@@ -496,19 +623,11 @@ final class TypeIndexStore {
         return key;
     }
 
-    private static byte[] typedPrefix(final int collectionId, final short localTypeId) {
+    private static byte[] typedPrefix(final int docId, final short localTypeId) {
         final byte[] key = new byte[7];
         key[0] = TYPED_VALUES;
-        ByteConversion.intToByteH(collectionId, key, 1);
+        ByteConversion.intToByteH(docId, key, 1);
         ByteConversion.shortToByteH(localTypeId, key, 5);
-        return key;
-    }
-
-    private static byte[] typedKey(final int collectionId, final short localTypeId, final byte[] valueKey, final int docId) {
-        final byte[] key = new byte[7 + valueKey.length + 4];
-        System.arraycopy(typedPrefix(collectionId, localTypeId), 0, key, 0, 7);
-        System.arraycopy(valueKey, 0, key, 7, valueKey.length);
-        ByteConversion.intToByteH(docId, key, 7 + valueKey.length);
         return key;
     }
 
@@ -534,15 +653,6 @@ final class TypeIndexStore {
             }
         }
         return ids;
-    }
-
-    private static byte[] docTypedKey(final int docId, final short localTypeId, final byte[] valueKey) {
-        final byte[] key = new byte[7 + valueKey.length];
-        key[0] = DOC_TYPED_KEYS;
-        ByteConversion.intToByteH(docId, key, 1);
-        ByteConversion.shortToByteH(localTypeId, key, 5);
-        System.arraycopy(valueKey, 0, key, 7, valueKey.length);
-        return key;
     }
 
     private static byte[] concat(final byte[] a, final byte[] b) {

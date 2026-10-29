@@ -22,6 +22,8 @@
 package org.exist.indexing.schematype;
 
 import org.exist.dom.QName;
+import org.exist.dom.persistent.DefaultDocumentSet;
+import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.DocumentSet;
 import org.exist.dom.persistent.NewArrayNodeSet;
 import org.exist.dom.persistent.NodeProxy;
@@ -32,7 +34,6 @@ import org.exist.storage.ElementValue;
 import org.exist.storage.IndexSpec;
 import org.exist.xquery.Atomize;
 import org.exist.xquery.CastExpression;
-import org.exist.xquery.ChildSelector;
 import org.exist.xquery.Constants;
 import org.exist.xquery.Constants.Comparison;
 import org.exist.xquery.DescendantOrSelfSelector;
@@ -66,12 +67,14 @@ import org.exist.xquery.value.SequenceIterator;
 import org.exist.xquery.value.Type;
 import org.exist.xquery.value.UserDefinedType;
 import org.exist.xquery.value.UserTypeRegistry;
+import org.w3c.dom.Node;
 
 import javax.annotation.Nullable;
 import javax.xml.datatype.DatatypeConstants;
 import javax.xml.datatype.XMLGregorianCalendar;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -92,11 +95,17 @@ import java.util.List;
  *       is not looked up;</li>
  *   <li>every document is answerable ({@link SchemaTypeIndexWorker#typedScopes}) and its collection has no legacy
  *       range index on the compared name (that index already answers the comparison);</li>
- *   <li>every compared node below the step's nodes is annotated with a listed type whose values are of the literal's
- *       family (and, for a value comparison, not a list type) and has an indexable value: an unannotated node, one
- *       of another family, or one whose value could not be indexed would compare differently or raise an error;</li>
- *   <li>for a value comparison, no step node has two compared children (the comparison would raise XPTY0004).</li>
+ *   <li>in every document, every node of the compared name is annotated with a listed type whose values are of the
+ *       literal's family (and, for a value comparison, not a list type) and has an indexable value: an unannotated
+ *       node, one of another family, or one whose value could not be indexed would compare differently or raise an
+ *       error;</li>
+ *   <li>for a value comparison over a child, no element of the document has two children of the compared name (the
+ *       comparison would raise XPTY0004).</li>
  * </ul>
+ * <p>The last two are read from the summary the index keeps per document and name ({@link TypeIndexStore.Summary}):
+ * the check costs one read per document of the context, whatever the size of the collection. The summary is
+ * conservative (a removed node leaves its name's flags and types), so it may make the lookup fall back, never miss a
+ * node. Documents indexed before the summary existed have another typed-values fingerprint and fall back.</p>
  * <p>{@code !=} and {@code ne} are never answered. Strings are compared by codepoint, so the default collation must be
  * the codepoint collation. Dates and times without timezone compare with an implicit timezone: their keys are kept
  * apart and the ranges over them are widened by the largest timezone offset, 14 hours.</p>
@@ -313,67 +322,58 @@ final class TypedRangeLookup implements LocationStep.IndexLookup, IndexUseReport
         if (stepNodes.isEmpty()) {
             return answered(context, step, start, stepNodes);
         }
-        final NodeSet compareds = switch (leaf) {
-            case SELF -> stepNodes;
-            case CHILD -> structural.findElementsByTagName(ElementValue.ELEMENT, docs, leafName,
-                    new ChildSelector(stepNodes, Expression.NO_CONTEXT_ID), step);
-            case ATTRIBUTE -> structural.findElementsByTagName(ElementValue.ATTRIBUTE, docs, leafName,
-                    new ChildSelector(stepNodes, Expression.NO_CONTEXT_ID), step);
-        };
-        if (compareds.isEmpty()) {
-            // no step node has a node to compare: the predicate is false for all
-            return answered(context, step, start, new NewArrayNodeSet());
-        }
+        final TypeIndexStore.NameKey comparedKey = TypeIndexStore.NameKey.of(
+                leaf == Leaf.ATTRIBUTE ? Node.ATTRIBUTE_NODE : Node.ELEMENT_NODE, compared);
 
         try {
             final TypeIndexStore store = worker.store();
-            // every compared node must be of a selected type, with an indexed value
-            final NodeSet ofSelectedTypes = new NewArrayNodeSet();
-            for (int s = 0; s < scopes.size(); s++) {
-                final TypedScope scope = scopes.get(s);
-                if (selected.get(s).length == 0) {
-                    continue;
-                }
-                if (store.hasUnindexable(scope.collection().getId(), scope.docs(), selected.get(s))) {
-                    return null;
-                }
-                ofSelectedTypes.addAll(store.nodesOfType(scope.docs(), selected.get(s)));
-            }
-            for (final NodeProxy node : compareds) {
-                if (!ofSelectedTypes.contains(node)) {
-                    return null;
-                }
-            }
-            if (valueComparison && leaf == Leaf.CHILD && parents(compareds).getLength() != compareds.getLength()) {
-                // a step node with two compared children: XPTY0004 (or a comparison of each, which only the step knows)
-                return null;
-            }
-
-            // the compared nodes whose values may match
+            // the step's nodes (or their parents) whose compared node's value may match
             final NodeSet matching = new NewArrayNodeSet();
             for (int s = 0; s < scopes.size(); s++) {
                 final TypedScope scope = scopes.get(s);
                 final short[] ids = selected.get(s);
                 final int[] fams = families.get(s);
-                for (int t = 0; t < ids.length; t++) {
-                    for (final AtomicValue value : values) {
-                        final List<byte[][]> ranges = ranges(fams[t], value, relation);
-                        if (ranges == null) {
+                for (final Iterator<DocumentImpl> i = scope.docs().getDocumentIterator(); i.hasNext(); ) {
+                    final DocumentImpl doc = i.next();
+                    // completeness, from the document's summary of the compared name (O(1) per document)
+                    final TypeIndexStore.Summary summary = store.getSummary(doc.getDocId(), comparedKey);
+                    if (summary == null) {
+                        // no node of the compared name in the document: the predicate is false for its step nodes
+                        continue;
+                    }
+                    if ((summary.flags() & TypeIndexStore.SUMMARY_UNTYPED) != 0) {
+                        // a node without an indexed typed value would compare differently or raise an error
+                        return null;
+                    }
+                    if (valueComparison && leaf == Leaf.CHILD && (summary.flags() & TypeIndexStore.SUMMARY_REPEATED) != 0) {
+                        // maybe a step node with two compared children: XPTY0004
+                        return null;
+                    }
+                    final DefaultDocumentSet single = new DefaultDocumentSet(1);
+                    single.add(doc);
+                    for (final short type : summary.localTypeIds()) {
+                        final int t = indexOf(ids, type);
+                        if (t < 0) {
+                            // a compared node of a type whose values the literal does not compare with (or not indexed)
                             return null;
                         }
-                        for (final byte[][] range : ranges) {
-                            matching.addAll(store.typedRange(scope.collection().getId(), scope.docs(), new short[] {ids[t]},
-                                    range[0], range[1]));
+                        for (final AtomicValue value : values) {
+                            final List<byte[][]> ranges = ranges(fams[t], value, relation);
+                            if (ranges == null) {
+                                return null;
+                            }
+                            for (final byte[][] range : ranges) {
+                                matching.addAll(store.typedRange(single, new short[] {type}, range[0], range[1]));
+                            }
                         }
                     }
                 }
             }
+            // a superset: a matching node of another name (but the same type) also selects its parent; the step's
+            // predicate removes it again
             final NodeSet targets = new NewArrayNodeSet();
             for (final NodeProxy node : matching) {
-                if (compareds.contains(node)) {
-                    targets.add(leaf == Leaf.SELF ? node
-                            : new NodeProxy(null, node.getOwnerDocument(), node.getNodeId().getParentId()));
-                }
+                targets.add(leaf == Leaf.SELF ? node : new NodeProxy(null, node.getOwnerDocument(), node.getNodeId().getParentId()));
             }
             final NodeSet result = new NewArrayNodeSet();
             if (!targets.isEmpty()) {
@@ -389,6 +389,15 @@ final class TypedRangeLookup implements LocationStep.IndexLookup, IndexUseReport
         }
     }
 
+    private static int indexOf(final short[] ids, final short id) {
+        for (int i = 0; i < ids.length; i++) {
+            if (ids[i] == id) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     private NodeSet answered(final XQueryContext context, final LocationStep step, final long start, final NodeSet result) {
         usedIndex = true;
         if (context.getProfiler().traceFunctions()) {
@@ -396,15 +405,6 @@ final class TypedRangeLookup implements LocationStep.IndexLookup, IndexUseReport
                     PerformanceStats.IndexOptimizationLevel.OPTIMIZED, System.currentTimeMillis() - start);
         }
         return result;
-    }
-
-    private static NodeSet parents(final NodeSet nodes) {
-        final NodeSet parents = new NewArrayNodeSet();
-        for (final NodeProxy node : nodes) {
-            parents.add(new NodeProxy(null, node.getOwnerDocument(), node.getNodeId().getParentId()));
-        }
-        parents.removeDuplicates();
-        return parents;
     }
 
     /**
@@ -609,13 +609,8 @@ final class TypedRangeLookup implements LocationStep.IndexLookup, IndexUseReport
                 if (key == null) {
                     return null;
                 }
-                if (TypedKeys.isTruncatedString(value.getStringValue())) {
-                    // the key stands for every string with its prefix
-                    final byte[] prefix = java.util.Arrays.copyOf(key, key.length - 1);
-                    ranges.add(bounds(relation, new byte[] {(byte) family}, prefix, prefix));
-                } else {
-                    ranges.add(bounds(relation, new byte[] {(byte) family}, key, key));
-                }
+                // the keys order non-strictly (long strings share a key): the inclusive bound is sound
+                ranges.add(bounds(relation, new byte[] {(byte) family}, key, key));
             }
             default -> {
                 return null;

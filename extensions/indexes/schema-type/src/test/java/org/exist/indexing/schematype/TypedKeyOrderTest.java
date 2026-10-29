@@ -21,6 +21,7 @@
  */
 package org.exist.indexing.schematype;
 
+import org.exist.util.Collations;
 import org.exist.xquery.ValueComparison;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.value.AtomicValue;
@@ -115,13 +116,37 @@ public class TypedKeyOrderTest {
         assertOrdered(Type.TOKEN, "EUR", "GBP", "USD");
         // strings longer than the limit are truncated: they order with the others, but share a key
         final String a = "a".repeat(TypedKeys.MAX_STRING_BYTES);
-        assertTrue(TypedKeys.isTruncatedString(a + "b"));
         assertEquals(0, compare(enc(Type.STRING, a + "b"), enc(Type.STRING, a + "c")));
         assertTrue(compare(enc(Type.STRING, a.substring(1)), enc(Type.STRING, a + "b")) < 0);
         assertTrue(compare(enc(Type.STRING, a + "b"), enc(Type.STRING, "b")) < 0);
-        // a multi-byte character at the limit is not cut
+        // the cut is at exactly the limit, within a character if need be
         final byte[] cut = enc(Type.STRING, "a".repeat(TypedKeys.MAX_STRING_BYTES - 1) + "é");
-        assertEquals(1 + TypedKeys.MAX_STRING_BYTES - 1 + 1, cut.length);
+        assertEquals(1 + TypedKeys.MAX_STRING_BYTES + 1, cut.length);
+    }
+
+    /**
+     * Long strings with multi-byte characters at the cut: {@code s < t} must imply {@code key(s) <= key(t)}, else an
+     * inclusive key range misses a value the comparison matches.
+     */
+    @Test
+    public void longStringKeysAreMonotone() throws XPathException {
+        final int n = TypedKeys.MAX_STRING_BYTES;
+        final String a254 = "a".repeat(n - 2);
+        final String a255 = "a".repeat(n - 1);
+        final List<String> values = new ArrayList<>(List.of(
+                // the review's counterexample: "a"x255 + "é..." > "a"x255 + "b"
+                a255 + "é" + "x", a255 + "b", a255 + "b" + "z", a255 + "é", a255 + "ê", a255,
+                a254 + "中", a254 + "中x", a254 + "中y", a254 + "é", a254 + "éa", a254 + "b", a254 + "😀", a254 + "😀a",
+                a255 + "😀", a255 + "\u007f", a255 + "\u0080", "a".repeat(n) + "é", "a".repeat(n), "a".repeat(n + 1), "b"));
+        values.sort((x, y) -> Collations.compare(null, x, y));
+        for (int i = 0; i < values.size(); i++) {
+            for (int j = i; j < values.size(); j++) {
+                final String s = values.get(i);
+                final String t = values.get(j);
+                final int c = compare(enc(Type.STRING, s), enc(Type.STRING, t));
+                assertTrue(c <= 0, () -> "key order breaks at " + s.substring(n - 3) + " <= " + t.substring(Math.min(t.length(), n - 3)));
+            }
+        }
     }
 
     @Test

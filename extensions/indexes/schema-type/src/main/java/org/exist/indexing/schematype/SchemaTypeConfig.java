@@ -107,12 +107,17 @@ public final class SchemaTypeConfig {
         return typedValueTypes;
     }
 
+    /** the version of the typed-value layout (0x07 name summaries, 0x08 doc-major values), in the fingerprint */
+    static final String TYPED_VALUES_FORMAT = "2;";
+
     /**
-     * The typed-value types as one string (their expanded names, sorted), recorded with each document's typed values
-     * ({@link DocMeta#typedValues()}): a document indexed for other types has no entries for some listed type.
+     * The layout version and the typed-value types as one string (their expanded names, sorted), recorded with each
+     * document's typed values ({@link DocMeta#typedValues()}): a document indexed for other types, or with another
+     * layout, cannot answer a comparison.
      */
     public String typedValuesFingerprint() {
-        return typedValueTypes.stream()
+        // the format version first: documents indexed with another layout (e.g. without name summaries) fall back
+        return TYPED_VALUES_FORMAT + typedValueTypes.stream()
                 .map(name -> '{' + (name.getNamespaceURI() == null ? "" : name.getNamespaceURI()) + '}' + name.getLocalPart())
                 .sorted()
                 .collect(java.util.stream.Collectors.joining(" "));

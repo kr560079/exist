@@ -162,6 +162,16 @@ declare variable $v:VALUES :=
 declare variable $v:DUP := <vv:items><vv:item><vv:dec>5</vv:dec><vv:dec>6</vv:dec></vv:item></vv:items>;
 declare variable $v:UNTYPED :=
     <vv:items><vv:item><vv:dec>3</vv:dec></vv:item><vv:skip><vv:item><vv:dec>4</vv:dec></vv:item></vv:skip></vv:items>;
+(: long strings: their keys are cut at 256 bytes, here within a multi-byte character :)
+declare variable $v:A254 := string-join((1 to 254) ! "a");
+declare variable $v:A255 := $v:A254 || "a";
+declare variable $v:A256 := $v:A255 || "a";
+declare variable $v:LONG-STRINGS := (
+    $v:A255 || "éx", $v:A255 || "b", $v:A255 || "bz", $v:A255 || "é", $v:A255 || "ê", $v:A255, $v:A254 || "中",
+    $v:A254 || "中x", $v:A254 || "é", $v:A256 || "é", $v:A256, $v:A256 || "b", "z", "a");
+(: the review's counterexample (a255 || "b", which a255 || "é..." is greater than), and literals cut within a character :)
+declare variable $v:LONG-LITERALS := ($v:A255 || "b", $v:A255 || "éx", $v:A255 || "é", $v:A254 || "中x", $v:A256, $v:A255);
+declare variable $v:LONG := <vv:items>{ $v:LONG-STRINGS ! <vv:item><vv:s>{.}</vv:s></vv:item> }</vv:items>;
 declare variable $v:UPD := <vv:items><vv:item><vv:dec>1</vv:dec></vv:item><vv:item><vv:dec>2</vv:dec></vv:item></vv:items>;
 
 declare %test:setUp function v:setUp() {
@@ -175,7 +185,8 @@ declare %test:setUp function v:setUp() {
     xmldb:store($v:VALUES_COLLECTION, "values.xml", $v:VALUES),
     xmldb:store($v:VALUES_COLLECTION, "dup.xml", $v:DUP),
     xmldb:store($v:VALUES_COLLECTION, "untyped.xml", $v:UNTYPED),
-    for $i in 1 to 3 return xmldb:store($v:VALUES_COLLECTION, "upd-" || $i || ".xml", $v:UPD),
+    for $i in 1 to 5 return xmldb:store($v:VALUES_COLLECTION, "upd-" || $i || ".xml", $v:UPD),
+    xmldb:store($v:VALUES_COLLECTION, "long.xml", $v:LONG),
     xmldb:reindex($v:VALUES_COLLECTION),
     xmldb:create-collection("/db", "schema-type-vrange"),
     xmldb:create-collection("/db/system/config/db", "schema-type-vrange"),
@@ -381,4 +392,57 @@ declare %test:assertTrue function v:update-value() {
         and v:vsame('doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec > 500]')
         and v:veval('count(doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec > 500])') eq 1
         and v:veval('count(doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec = 1])') eq 0
+};
+
+(: --- updates which make the index incomplete, or leave it complete --- :)
+
+declare %test:assertTrue function v:update-insert-unannotated() {
+    let $before := v:vuses-index('doc("/db/schema-type-values/upd-4.xml")//vv:item[vv:dec > 8]')
+    let $u := update insert <vv:skip><vv:item><vv:dec>9</vv:dec></vv:item></vv:skip> into doc("/db/schema-type-values/upd-4.xml")/vv:items
+    return
+        $before and empty($u)
+        and v:vsame('doc("/db/schema-type-values/upd-4.xml")//vv:item[vv:dec > 8]')
+        and v:veval('count(doc("/db/schema-type-values/upd-4.xml")//vv:item[vv:dec > 8])') eq 1
+        (: the unannotated vv:dec is flagged in the document's summary :)
+        and not(v:vuses-index('doc("/db/schema-type-values/upd-4.xml")//vv:item[vv:dec > 8]'))
+        (: removing it again leaves the summary conservative: still the usual evaluation, still right :)
+        and empty(update delete doc("/db/schema-type-values/upd-4.xml")/vv:items/vv:skip)
+        and v:vsame('doc("/db/schema-type-values/upd-4.xml")//vv:item[vv:dec > 8]')
+        and v:veval('count(doc("/db/schema-type-values/upd-4.xml")//vv:item[vv:dec > 8])') eq 0
+};
+declare %test:assertTrue function v:update-delete() {
+    let $u := update delete doc("/db/schema-type-values/upd-5.xml")/vv:items/vv:item[1]
+    return
+        empty($u)
+        and v:vsame('doc("/db/schema-type-values/upd-5.xml")//vv:item[vv:dec >= 1]')
+        and v:veval('count(doc("/db/schema-type-values/upd-5.xml")//vv:item[vv:dec >= 1])') eq 1
+        and v:veval('count(doc("/db/schema-type-values/upd-5.xml")//vv:item[vv:dec = 1])') eq 0
+        and v:vuses-index('doc("/db/schema-type-values/upd-5.xml")//vv:item[vv:dec >= 1]')
+};
+
+(: --- long strings: keys cut at 256 bytes, within a multi-byte character --- :)
+
+declare function v:long-same($op as xs:string) as xs:boolean {
+    every $literal in $v:LONG-LITERALS satisfies
+        v:vsame('doc("/db/schema-type-values/long.xml")//vv:item[vv:s ' || $op || ' "' || $literal || '"]')
+};
+
+declare %test:assertTrue function v:long-string-eq() { v:long-same("=") };
+declare %test:assertTrue function v:long-string-lt() { v:long-same("<") };
+declare %test:assertTrue function v:long-string-le() { v:long-same("<=") };
+declare %test:assertTrue function v:long-string-gt() { v:long-same(">") };
+declare %test:assertTrue function v:long-string-ge() { v:long-same(">=") };
+declare %test:assertTrue function v:long-string-value-gt() { v:long-same("gt") };
+declare %test:assertTrue function v:long-string-value-eq() { v:long-same("eq") };
+declare %test:assertTrue function v:long-string-uses-index() {
+    every $op in ("=", "<", "<=", ">", ">=") satisfies
+        v:vuses-index('doc("/db/schema-type-values/long.xml")//vv:item[vv:s ' || $op || ' "' || $v:A255 || 'b"]')
+};
+(: the review's counterexample: a255 || "é..." > a255 || "b", though it sorts before it when cut at a character :)
+declare %test:assertEquals(8) function v:long-string-gt-count() {
+    v:veval('count(doc("/db/schema-type-values/long.xml")//vv:item[vv:s > "' || $v:A255 || 'b"])')
+};
+declare %test:assertEquals(2) function v:long-string-eq-count() {
+    v:veval('count(doc("/db/schema-type-values/long.xml")//vv:item[vv:s = "' || $v:A255 || 'é"])')
+        + v:veval('count(doc("/db/schema-type-values/long.xml")//vv:item[vv:s = "' || $v:A255 || 'éx"])')
 };

@@ -66,7 +66,11 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     enum PassKind { NONE, FULL, SEEDED, REMOVE }
 
     /** an assignment with the lexical value of its node, when a typed value may be needed */
-    record Pending(TypeAssigner.Assignment assignment, @Nullable String lexical) {
+    record Pending(TypeAssigner.Assignment assignment, @Nullable String lexical, @Nullable TypeIndexStore.NameKey name) {
+    }
+
+    /** a node received in a pass, until its assignment is drained */
+    private record Received(TypeIndexStore.NameKey name, NodeId id, short kind) {
     }
 
     /**
@@ -103,6 +107,14 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     private final Deque<StringBuilder> texts = new ArrayDeque<>();
     private final List<AttrValue> attrValues = new ArrayList<>();
     private final List<Pending> pending = new ArrayList<>();
+    /** the names of the nodes of the pass whose assignment has not been drained, by node id */
+    private final Map<String, Received> undrained = new HashMap<>();
+    /** the nodes of the pass known to be untyped, by name */
+    private final Map<TypeIndexStore.NameKey, List<TypeIndexStore.Member>> untyped = new HashMap<>();
+    /** the flags of the names of the nodes received since the last {@link #takeNames()} */
+    private final Map<TypeIndexStore.NameKey, Byte> names = new HashMap<>();
+    /** per open element of the pass: the number of its element children by name */
+    private final Deque<Map<TypeIndexStore.NameKey, Integer>> childNames = new ArrayDeque<>();
     private boolean clearBeforeWrite;
     private boolean rootEnded;
     private final List<String> unassignablePaths = new ArrayList<>();
@@ -171,6 +183,19 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
             }
             final Map<String, String> inScope = scope;
             final QName name = element.getQName();
+            final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ELEMENT_NODE, name);
+            byte flags = 0;
+            if (childNames.isEmpty()) {
+                // the root of a seeded pass: its siblings are not received
+                if (kind == PassKind.SEEDED) {
+                    flags = TypeIndexStore.SUMMARY_REPEATED;
+                }
+            } else if (childNames.peek().merge(key, 1, Integer::sum) > 1) {
+                flags = TypeIndexStore.SUMMARY_REPEATED;
+            }
+            childNames.push(new HashMap<>());
+            names.merge(key, flags, (a, b) -> (byte) (a | b));
+            undrained.put(element.getNodeId().toString(), new Received(key, element.getNodeId(), Node.ELEMENT_NODE));
             assigner.startElement(element.getNodeId(), name, prefix -> resolvePrefix(inScope, name, prefix));
             drain(null, null);
         }
@@ -181,6 +206,9 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     public void attribute(final Txn transaction, final AttrImpl attrib, final NodePath path) {
         if (inPass()) {
             final String value = attrib.getValue();
+            final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ATTRIBUTE_NODE, attrib.getQName());
+            names.merge(key, (byte) 0, (a, b) -> (byte) (a | b));
+            undrained.put(attrib.getNodeId().toString(), new Received(key, attrib.getNodeId(), Node.ATTRIBUTE_NODE));
             assigner.attribute(attrib.getNodeId(), attrib.getQName(), value);
             if (collectValues) {
                 attrValues.add(new AttrValue(attrib.getNodeId(), value));
@@ -196,9 +224,15 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                 if (beginPass(PassKind.SEEDED, attrib.getNodeId(), path0, Map.of())) {
                     final TypeAssigner.Assignment a = assigner.assignAttribute(seed.parentType(), seed.parentPath(),
                             attrib.getNodeId(), attrib.getQName(), attrib.getValue());
+                    final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ATTRIBUTE_NODE, attrib.getQName());
                     if (a != null) {
                         rejectIfRequired(a);
-                        pending.add(new Pending(a, collectValues ? attrib.getValue() : null));
+                        pending.add(new Pending(a, collectValues ? attrib.getValue() : null, key));
+                        names.merge(key, (byte) 0, (x, y) -> (byte) (x | y));
+                    } else {
+                        names.merge(key, (byte) 0, (x, y) -> (byte) (x | y));
+                        untyped.computeIfAbsent(key, k -> new ArrayList<>())
+                                .add(new TypeIndexStore.Member(attrib.getNodeId(), Node.ATTRIBUTE_NODE));
                     }
                     rootEnded = true;
                 }
@@ -231,6 +265,9 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
             final String text = collectValues && !texts.isEmpty() ? texts.pop().toString() : null;
             assigner.endElement();
             drain(element.getNodeId(), text);
+            if (!childNames.isEmpty()) {
+                childNames.pop();
+            }
             attrValues.clear();
             namespaces.pop();
             if (element.getNodeId().equals(rootId)) {
@@ -309,7 +346,8 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                     lexical = endedText;
                 }
             }
-            pending.add(new Pending(assignment, lexical));
+            final Received received = undrained.remove(assignment.nodeId().toString());
+            pending.add(new Pending(assignment, lexical, received == null ? null : received.name()));
         }
     }
 
@@ -365,6 +403,31 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         return result;
     }
 
+    /**
+     * The names of the nodes received since the last call, with their flags ({@link TypeIndexStore#SUMMARY_REPEATED}).
+     */
+    Map<TypeIndexStore.NameKey, Byte> takeNames() {
+        final Map<TypeIndexStore.NameKey, Byte> result = new HashMap<>(names);
+        names.clear();
+        return result;
+    }
+
+    /**
+     * The nodes known to be untyped since the last call, by name: once the root has ended, those which got no
+     * assignment (e.g. below an unannotated parent, or the content of a skip wildcard).
+     */
+    Map<TypeIndexStore.NameKey, List<TypeIndexStore.Member>> takeUntyped() {
+        if (rootEnded) {
+            for (final Received node : undrained.values()) {
+                untyped.computeIfAbsent(node.name(), k -> new ArrayList<>()).add(new TypeIndexStore.Member(node.id(), node.kind()));
+            }
+            undrained.clear();
+        }
+        final Map<TypeIndexStore.NameKey, List<TypeIndexStore.Member>> result = new HashMap<>(untyped);
+        untyped.clear();
+        return result;
+    }
+
     /** true once: whether the old entries must be cleared before the first write of the pass */
     boolean takeClear() {
         final boolean clear = clearBeforeWrite;
@@ -412,6 +475,10 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         texts.clear();
         attrValues.clear();
         pending.clear();
+        undrained.clear();
+        untyped.clear();
+        names.clear();
+        childNames.clear();
         clearBeforeWrite = false;
         rootEnded = false;
         unassignablePaths.clear();

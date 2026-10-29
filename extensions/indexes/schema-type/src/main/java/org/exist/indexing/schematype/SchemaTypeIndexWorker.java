@@ -79,11 +79,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The worker of the schema type index: assigns types to the nodes of documents stored in collections with a
@@ -452,14 +454,22 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
 
         final Map<Short, List<Member>> members = new LinkedHashMap<>();
         final Map<TypedKey, List<Member>> typedValues = new LinkedHashMap<>();
+        // the name summaries: flags and types by name
+        final Map<TypeIndexStore.NameKey, Byte> summaryFlags = new HashMap<>(listener.takeNames());
+        final Map<TypeIndexStore.NameKey, Set<Short>> summaryTypes = new HashMap<>();
+        final Map<TypeIndexStore.NameKey, List<Member>> untyped = new HashMap<>(listener.takeUntyped());
         for (final SchemaTypeStreamListener.Pending p : work) {
             final TypeAssigner.Assignment a = p.assignment();
-            if (a.status() != TypeAssigner.Status.ANNOTATED || !typeIds.containsKey(a.typeCode())) {
+            final Short localTypeId = a.status() == TypeAssigner.Status.ANNOTATED && typeIds.containsKey(a.typeCode())
+                    ? table.localOf(a.typeCode()) : null;
+            if (localTypeId == null) {
+                if (p.name() != null) {
+                    untyped.computeIfAbsent(p.name(), k -> new ArrayList<>()).add(new Member(a.nodeId(), (short) a.nodeKind()));
+                }
                 continue;
             }
-            final Short localTypeId = table.localOf(a.typeCode());
-            if (localTypeId == null) {
-                continue;
+            if (p.name() != null) {
+                summaryTypes.computeIfAbsent(p.name(), k -> new HashSet<>()).add(localTypeId);
             }
             store.putAnnotation(docId, a.nodeId(), localTypeId, a.nilled());
             final Member member = new Member(a.nodeId(), (short) a.nodeKind());
@@ -468,7 +478,14 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 final QName typeName = LocalTypeTable.typeNameOf(a.typeCode());
                 if (typeName != null && cfg.typedValueTypes().contains(typeName)) {
                     // a nilled node's typed value is empty: no entry; a value which was not collected cannot be found
-                    final List<byte[]> keys = p.lexical() == null ? UNINDEXABLE : valueKeys(p.lexical(), a.typeCode());
+                    final List<byte[]> keys = p.lexical() == null ? null : valueKeys(p.lexical(), a.typeCode());
+                    if (keys == null) {
+                        // the comparisons over this name in this document cannot be answered from the index
+                        if (p.name() != null) {
+                            untyped.computeIfAbsent(p.name(), k -> new ArrayList<>()).add(member);
+                        }
+                        continue;
+                    }
                     for (final byte[] key : keys) {
                         final List<Member> list = typedValues.computeIfAbsent(new TypedKey(localTypeId, key), k -> new ArrayList<>());
                         // a list value may repeat an item
@@ -483,7 +500,17 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             store.addTypeMembers(entry.getKey(), docId, entry.getValue());
         }
         for (final Map.Entry<TypedKey, List<Member>> entry : typedValues.entrySet()) {
-            store.putTypedValues(collectionId, entry.getKey().localTypeId(), entry.getKey().key(), docId, entry.getValue());
+            store.putTypedValues(docId, entry.getKey().localTypeId(), entry.getKey().key(), entry.getValue());
+        }
+        for (final TypeIndexStore.NameKey name : summaryTypes.keySet()) {
+            summaryFlags.putIfAbsent(name, (byte) 0);
+        }
+        for (final Map.Entry<TypeIndexStore.NameKey, List<Member>> entry : untyped.entrySet()) {
+            summaryFlags.putIfAbsent(entry.getKey(), (byte) 0);
+            store.addUntyped(docId, entry.getKey(), entry.getValue());
+        }
+        for (final Map.Entry<TypeIndexStore.NameKey, Byte> entry : summaryFlags.entrySet()) {
+            store.mergeSummary(docId, entry.getKey(), entry.getValue(), summaryTypes.getOrDefault(entry.getKey(), Set.of()));
         }
         listener.recordUnassignable(unassignable);
 
@@ -543,14 +570,11 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
     }
 
-    /** the key list of a node whose typed value has no key: see {@link TypedKeys#UNINDEXABLE} */
-    private static final List<byte[]> UNINDEXABLE = List.of(new byte[] {TypedKeys.UNINDEXABLE});
-
     /**
      * @return the typed keys ({@link TypedKeys}) of the items of the typed value of a node (none for an empty
-     *         list), or {@link #UNINDEXABLE} if the value cannot be built or an item has no key
+     *         list), or null if the value cannot be built or an item has no key
      */
-    private static List<byte[]> valueKeys(final String lexical, final int typeCode) {
+    private static @Nullable List<byte[]> valueKeys(final String lexical, final int typeCode) {
         final List<byte[]> keys = new ArrayList<>(1);
         try {
             final Sequence value = TypedValues.fromLexical(lexical, typeCode, null);
@@ -559,13 +583,13 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 final byte[] key = item instanceof AtomicValue atomic ? TypedKeys.encode(atomic) : null;
                 if (key == null) {
                     // e.g. a value of a type without encoding, or too large
-                    return UNINDEXABLE;
+                    return null;
                 }
                 keys.add(key);
             }
         } catch (final XPathException e) {
             // an invalid value (check-values="false"): comparisons raise an error the index cannot
-            return UNINDEXABLE;
+            return null;
         }
         return keys;
     }

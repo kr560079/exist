@@ -69,6 +69,11 @@
             <artifactId>jsr305</artifactId>
         </dependency>
         <dependency>
+            <!-- the default collation of a query (TypedRangeLookup answers string comparisons by codepoint only) -->
+            <groupId>com.ibm.icu</groupId>
+            <artifactId>icu4j</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.exist-db.thirdparty.xerces</groupId>
             <artifactId>xercesImpl</artifactId>
             <classifier>jdk14-xml-schema-1.1</classifier>

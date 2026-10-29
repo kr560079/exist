@@ -54,8 +54,9 @@ import java.util.Arrays;
  *   <tr><td>{@link #DOUBLE}</td><td>xs:double, xs:float (widened, which is exact)</td><td>{@code 0x00} for NaN, else
  *       {@code 0x01} and the 8 bytes of the IEEE bits made sortable (-0 is written as +0)</td></tr>
  *   <tr><td>{@link #STRING}</td><td>xs:string and its subtypes</td><td>UTF-8 (codepoint order), at most
- *       {@link #MAX_STRING_BYTES} bytes, then {@code 0x00}; longer strings are truncated (their keys order with
- *       the other keys, but are not unique)</td></tr>
+ *       {@link #MAX_STRING_BYTES} bytes, then {@code 0x00}; longer strings are cut to their first
+ *       {@link #MAX_STRING_BYTES} bytes, even within a character (their keys order with the other keys, but not
+ *       strictly: {@code s < t} implies {@code key(s) <= key(t)}, which inclusive ranges need)</td></tr>
  *   <tr><td>{@link #ANY_URI}</td><td>xs:anyURI</td><td>as for strings</td></tr>
  *   <tr><td>{@link #DATE}, {@link #DATE_TIME}, {@link #TIME}</td><td>xs:date, xs:dateTime (and xs:dateTimeStamp),
  *       xs:time</td><td>{@link #TZ_AWARE} and the number of seconds since 1970-01-01T00:00:00Z of the (starting)
@@ -303,20 +304,13 @@ final class TypedKeys {
     private static void writeString(final ByteArrayOutputStream out, final String value) {
         byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
         if (utf8.length > MAX_STRING_BYTES) {
-            int end = MAX_STRING_BYTES;
-            // do not cut a character: back up to the start of a UTF-8 sequence
-            while (end > 0 && (utf8[end] & 0xC0) == 0x80) {
-                end--;
-            }
-            utf8 = Arrays.copyOf(utf8, end);
+            // Cut at exactly MAX_STRING_BYTES bytes, even within a character: a byte prefix of the UTF-8 bytes is
+            // monotone in codepoint order, so s < t implies key(s) <= key(t). Backing up to a character boundary would
+            // not be: a shorter prefix ends sooner and its terminator sorts before any byte of a longer key.
+            utf8 = Arrays.copyOf(utf8, MAX_STRING_BYTES);
         }
         out.writeBytes(utf8);
         out.write(0);
-    }
-
-    /** whether the key of a string was truncated (it then stands for every string with its prefix) */
-    static boolean isTruncatedString(final String value) {
-        return value.getBytes(StandardCharsets.UTF_8).length > MAX_STRING_BYTES;
     }
 
     private static boolean writeDateTime(final ByteArrayOutputStream out, final XMLGregorianCalendar cal, final int family) {

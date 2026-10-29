@@ -70,6 +70,8 @@ public class SchemaTypeIndexTest {
     private static final XmldbURI ST2 = XmldbURI.create("/db/st2");
     private static final XmldbURI CONF2 = XmldbURI.create("/db/system/config/db/st2");
     private static final XmldbURI PLAIN2 = XmldbURI.create("/db/plain2");
+    private static final XmldbURI ST3 = XmldbURI.create("/db/st3");
+    private static final XmldbURI CONF3 = XmldbURI.create("/db/system/config/db/st3");
     private static final XmldbURI CONF_PLAIN2 = XmldbURI.create("/db/system/config/db/plain2");
 
     private static final String XCONF = "<collection xmlns='" + CC + "'><index xmlns:t='" + T_NS
@@ -106,7 +108,7 @@ public class SchemaTypeIndexTest {
     @AfterEach
     void tearDown() throws Exception {
         try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF2, CONF_PLAIN2, ST, ST2, SCHEMAS, PLAIN, PLAIN2}) {
+            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF2, CONF3, CONF_PLAIN2, ST, ST2, ST3, SCHEMAS, PLAIN, PLAIN2}) {
                 final Collection col = broker.getCollection(uri);
                 if (col != null) {
                     broker.removeCollection(txn, col);
@@ -387,6 +389,117 @@ public class SchemaTypeIndexTest {
     }
 
     @Test
+    void typedValueLookupIsBoundedByTheContext() throws Exception {
+        // R44: the completeness check reads one summary per context document, whatever the size of the collection
+        final String query = "count(doc('/db/st/many-2.xml')//t:notional[t:amount > 50])";
+        final int few = 4;
+        final int many = 40;
+        try {
+            for (int i = 0; i < few; i++) {
+                store(ST, "many-" + i + ".xml", T1);
+            }
+            assertTrue(usesSchemaTypeIndex(query));
+            final long small = accesses(query);
+            for (int i = few; i < many; i++) {
+                store(ST, "many-" + i + ".xml", T1);
+            }
+            assertTrue(usesSchemaTypeIndex(query));
+            final long large = accesses(query);
+            assertTrue(small > 0);
+            assertEquals(small, large, "index accesses grow with the collection");
+            // and the answer is right over the whole collection, too
+            assertEquals(unoptimized("collection('/db/st')//t:notional[t:amount > 50]"),
+                    query("collection('/db/st')//t:notional[t:amount > 50]").getItemCount());
+        } finally {
+            for (int i = 0; i < many; i++) {
+                query("xmldb:remove('/db/st', 'many-" + i + ".xml')");
+            }
+        }
+    }
+
+    @Test
+    void summaryRecordsTypesAndFlags() throws Exception {
+        final int docId = doc(ST, "t1.xml").getDocId();
+        final TypeIndexStore.Summary amount = index().store().getSummary(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("amount", T_NS)));
+        assertNotNull(amount);
+        assertEquals(0, amount.flags());
+        assertEquals(java.util.Set.of(localTypeId(code("NonNegativeDecimal"))), amount.localTypeIds());
+        // an unannotated element (below a skip wildcard)
+        final TypeIndexStore.Summary foo = index().store().getSummary(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("foo", "")));
+        assertNotNull(foo);
+        assertEquals(TypeIndexStore.SUMMARY_UNTYPED, foo.flags() & TypeIndexStore.SUMMARY_UNTYPED);
+        assertNull(index().store().getSummary(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("absent", T_NS))));
+        // a replaced node is reassigned with its parent: the transient pass leaves no untyped node behind
+        query("update replace doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with <t:amount>777</t:amount>");
+        final TypeIndexStore.Summary replaced = index().store().getSummary(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("amount", T_NS)));
+        assertNotNull(replaced);
+        assertEquals(0, replaced.flags() & TypeIndexStore.SUMMARY_UNTYPED);
+        assertTrue(usesSchemaTypeIndex("doc('/db/st/t1.xml')//t:notional[t:amount > 700]"));
+        // an inserted sibling of the same name: repeated
+        query("update insert <t:amount>5</t:amount> following doc('/db/st/t1.xml')/t:trade/t:notional/t:amount");
+        final TypeIndexStore.Summary repeated = index().store().getSummary(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("amount", T_NS)));
+        assertNotNull(repeated);
+        assertEquals(TypeIndexStore.SUMMARY_REPEATED, repeated.flags() & TypeIndexStore.SUMMARY_REPEATED);
+    }
+
+    @Test
+    void legacyTypedValueRowsAreRemoved() throws Exception {
+        final int docId = doc(ST, "t1.xml").getDocId();
+        final NodeProxy amount = node("/db/st/t1.xml", "/t:trade/t:notional/t:amount");
+        final short lt = localTypeId(code("NonNegativeDecimal"));
+        final byte[] key = TypedKeys.decimalKey(java.math.BigDecimal.valueOf(100));
+        final int baseline = index().store().legacyTypedValueRowCount();
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            index().store().putLegacyTypedValue(lt, key, docId, amount.getNodeId());
+            txn.commit();
+        }
+        assertEquals(baseline + 1, index().store().legacyTypedValueRowCount());
+        // a subtree update of the document removes them
+        query("update value doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with '101'");
+        assertEquals(baseline, index().store().legacyTypedValueRowCount());
+        // and so does the removal of the document
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            index().store().putLegacyTypedValue(lt, key, docId, amount.getNodeId());
+            txn.commit();
+        }
+        assertEquals(baseline + 1, index().store().legacyTypedValueRowCount());
+        query("xmldb:remove('/db/st', 't1.xml')");
+        assertEquals(baseline, index().store().legacyTypedValueRowCount());
+        assertEquals(0, index().store().rowCountByScan(docId));
+    }
+
+    @Test
+    void collectionMoveKeepsTypedValues() throws Exception {
+        // bad.xml has unannotated amounts: a query over it is not answered from the index
+        final String path = "//t:notional[t:amount > 50]";
+        final int expected = query("(doc('/db/st/t1.xml'), doc('/db/st/trades.xml'))" + path).getItemCount();
+        assertTrue(expected > 0);
+        final int[] docIds = {doc(ST, "t1.xml").getDocId(), doc(ST, "trades.xml").getDocId()};
+        // the configuration does not move with the collection: configure the new path the same way
+        store(CONF3, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
+        query("xmldb:rename('/db/st', 'st3')");
+        assertNull(broker.getCollection(ST));
+
+        final String moved = "(doc('/db/st3/t1.xml'), doc('/db/st3/trades.xml'))" + path;
+        assertTrue(usesSchemaTypeIndex(moved));
+        assertEquals(expected, query(moved).getItemCount());
+        assertEquals(unoptimized(moved), expected);
+        assertEquals(1, query("count(doc('/db/st3/t1.xml')//t:notional[t:amount = 100])").itemAt(0).toJavaObject(Integer.class));
+
+        // nothing is left behind once the moved collection is removed
+        query("xmldb:remove('/db/st3')");
+        for (final int docId : docIds) {
+            assertEquals(0, index().store().rowCountByScan(docId), "rows left for document " + docId);
+            assertNull(index().store().getDocMeta(docId));
+        }
+    }
+
+    @Test
     void docMetaRecordsTypedValueTypes() throws Exception {
         assertEquals(config().typedValuesFingerprint(), docMeta("t1.xml").typedValues());
         assertTrue(docMeta("t1.xml").typedValues().contains("{urn:example:trade}NonNegativeDecimal"));
@@ -540,12 +653,12 @@ public class SchemaTypeIndexTest {
 
     private NodeSet typedValues(final String name, final int code, final String lexical) throws Exception {
         final byte[] key = TypedKeys.encode((org.exist.xquery.value.AtomicValue) TypedValues.fromLexical(lexical, code, null).itemAt(0));
-        return index().store().typedRange(broker.getCollection(ST).getId(), docs(name), new short[] {localTypeId(code)}, key, key);
+        return index().store().typedRange(docs(name), new short[] {localTypeId(code)}, key, key);
     }
 
     /** every typed value entry of a type in the documents */
     private NodeSet allTypedValues(final DefaultDocumentSet docs, final short localTypeId) throws Exception {
-        return index().store().typedRange(broker.getCollection(ST).getId(), docs, new short[] {localTypeId}, new byte[0], new byte[0]);
+        return index().store().typedRange(docs, new short[] {localTypeId}, new byte[0], new byte[0]);
     }
 
     private DefaultDocumentSet docs(final String... names) {
@@ -565,6 +678,31 @@ public class SchemaTypeIndexTest {
         } catch (final Exception e) {
             throw new AssertionError(e);
         }
+    }
+
+    /** whether a query reports use of the schema type index */
+    private boolean usesSchemaTypeIndex(final String expr) throws Exception {
+        final Sequence used = query("declare namespace prof='http://exist-db.org/xquery/profiling'; "
+                + "let $c := system:clear-trace() "
+                + "let $e := if (empty($c)) then system:enable-tracing(true(), false()) else () "
+                + "let $n := if (empty($e)) then count(" + expr + ") else -1 "
+                + "let $t := if ($n ge 0) then system:trace() else () "
+                + "let $d := if (exists($t)) then system:enable-tracing(false()) else () "
+                + "return empty($d) and exists($t//prof:index[@type = 'schema-type'])");
+        return used.effectiveBooleanValue();
+    }
+
+    /** the index accesses of a query (run once before, to warm the caches), which must count 1 */
+    private long accesses(final String query) throws Exception {
+        assertEquals(1, query(query).itemAt(0).toJavaObject(Integer.class));
+        final long before = index().store().accessCount();
+        assertEquals(1, query(query).itemAt(0).toJavaObject(Integer.class));
+        return index().store().accessCount() - before;
+    }
+
+    /** the number of items of a query evaluated without optimization */
+    private int unoptimized(final String query) throws Exception {
+        return query("declare option exist:optimize 'enable=no'; " + query).getItemCount();
     }
 
     private Sequence query(final String query) throws Exception {
