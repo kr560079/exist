@@ -159,11 +159,9 @@ public final class TypeAnnotations {
         }
         final String namespace = requested.name().getNamespaceURI();
         final DocumentImpl doc = node.getOwnerDocument();
-        final boolean sameNamespace = doc.getBrokerPool().getSchemaRegistry().get(nodeSchema)
-                // the schema is not cached: assume it covers the namespace rather than silently not matching
-                .map(schema -> schema.targetNamespaces().contains(namespace == null ? "" : namespace))
-                .orElse(true);
-        if (sameNamespace) {
+        // the namespaces of every compiled schema are kept, whether or not it is still cached
+        final java.util.Set<String> covered = UserTypeRegistry.namespacesOf(nodeSchema);
+        if (covered != null && covered.contains(namespace == null ? "" : namespace)) {
             throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0001,
                     "Type " + requested.name().toURIQualifiedName() + " comes from a different schema (" + requested.schema().sha256()
                             + ") than the one document " + doc.getURI() + " was annotated with (" + nodeSchema.sha256() + ")");

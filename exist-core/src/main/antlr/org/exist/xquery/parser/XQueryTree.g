@@ -100,6 +100,31 @@ options {
         return myModule;
     }
 
+    // === Schema Aware Feature ===
+    /**
+     * Resolve a type name against the built-in types and the in-scope schema definitions; an undeclared name in an
+     * imported namespace (XPST0008) is reported at the position of the name.
+     */
+    private int resolveTypeName(final QName name, final XQueryAST ast) throws XPathException {
+        return resolveTypeName(name, ast, null);
+    }
+
+    /** as {@link #resolveTypeName(QName, XQueryAST)}, falling back to the position of the enclosing test */
+    private int resolveTypeName(final QName name, final XQueryAST ast, final XQueryAST enclosing) throws XPathException {
+        try {
+            return staticContext.getInScopeSchemas().resolveTypeCode(name);
+        } catch (final XPathException e) {
+            if (e.getLine() <= 0) {
+                final XQueryAST at = ast != null && ast.getLine() > 0 ? ast : enclosing;
+                if (at != null && at.getLine() > 0) {
+                    throw new XPathException(at.getLine(), at.getColumn(), e.getErrorCode(), e.getDetailMessage());
+                }
+            }
+            throw e;
+        }
+    }
+    // === End Schema Aware Feature ===
+
     public boolean foundErrors() {
         return foundError;
     }
@@ -966,7 +991,8 @@ throws PermissionDeniedException, EXistException, XPathException
             final String schemaNamespace = targetURI.getText();
             final String[] schemaHints = new String[uriList.size()];
             for (int h = 0; h < schemaHints.length; h++) {
-                schemaHints[h] = ((AnyURIValue) uriList.get(h)).getStringValue();
+                // relative hints resolve against the static base URI or load path of this module's context
+                schemaHints[h] = context.resolveSchemaLocation(((AnyURIValue) uriList.get(h)).getStringValue());
             }
             try {
                 final org.exist.xquery.schema.CompiledSchema importedSchema =
@@ -1388,7 +1414,7 @@ throws XPathException
                     {
                         try {
                             QName qname11= QName.parse(staticContext, eq11.getText());
-                            type.setTypeAnnotation(staticContext.getInScopeSchemas().resolveTypeCode(qname11), false);
+                            type.setTypeAnnotation(resolveTypeName(qname11, eq11, lelement), false, context);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq11.getLine(), eq11.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq11.getText());
                         }
@@ -1408,7 +1434,7 @@ throws XPathException
                     {
                         try {
                             QName qname12= QName.parse(staticContext, eq12.getText());
-                            type.setTypeAnnotation(staticContext.getInScopeSchemas().resolveTypeCode(qname12), false);
+                            type.setTypeAnnotation(resolveTypeName(qname12, eq12, lelement), false, context);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq12.getLine(), eq12.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq12.getText());
                         }
@@ -1435,7 +1461,7 @@ throws XPathException
                     {
                         try {
                             QName qname22= QName.parse(staticContext, eq22.getText());
-                            type.setTypeAnnotation(staticContext.getInScopeSchemas().resolveTypeCode(qname22), false);
+                            type.setTypeAnnotation(resolveTypeName(qname22, eq22, lattr), false, context);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(lattr.getLine(), lattr.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq22.getText());
                         }
@@ -1447,7 +1473,7 @@ throws XPathException
                     {
                         try {
                             QName qname21= QName.parse(staticContext, eq21.getText());
-                            type.setTypeAnnotation(staticContext.getInScopeSchemas().resolveTypeCode(qname21), false);
+                            type.setTypeAnnotation(resolveTypeName(qname21, eq21, lattr), false, context);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(lattr.getLine(), lattr.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq21.getText());
                         }
@@ -1509,7 +1535,7 @@ throws XPathException
                             {
                                 try {
                                     QName qname = QName.parse(staticContext, dneq2.getText());
-                                    test = new TypeTest(staticContext.getInScopeSchemas().resolveTypeCode(qname));
+                                    test = new TypeTest(resolveTypeName(qname, dneq2, lelement2));
                                 } catch (final IllegalQNameException iqe) {
                                     throw new XPathException(lelement2.getLine(), lelement2.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq2.getText());
                                 }
@@ -2911,7 +2937,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     {
                         try {
                             QName qname= QName.parse(staticContext, eq22.getText());
-                            test = new TypedNodeTest(context, Type.ELEMENT, test.getName(), staticContext.getInScopeSchemas().resolveTypeCode(qname), false);
+                            test = new TypedNodeTest(context, Type.ELEMENT, test.getName(), resolveTypeName(qname, eq22, ast), false);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq22.getLine(), eq22.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq22.getText());
                         }
@@ -2923,7 +2949,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     {
                         try {
                             QName qname= QName.parse(staticContext, eq21.getText());
-                            test = new TypedNodeTest(context, Type.ELEMENT, null, staticContext.getInScopeSchemas().resolveTypeCode(qname), false);
+                            test = new TypedNodeTest(context, Type.ELEMENT, null, resolveTypeName(qname, eq21, ast), false);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq21.getLine(), eq21.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq21.getText());
                         }
@@ -2957,7 +2983,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     {
                         try {
                             QName qname= QName.parse(staticContext, eq32.getText());
-                            test = new TypedNodeTest(context, Type.ATTRIBUTE, test.getName(), staticContext.getInScopeSchemas().resolveTypeCode(qname), false);
+                            test = new TypedNodeTest(context, Type.ATTRIBUTE, test.getName(), resolveTypeName(qname, eq32, ast), false);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq32.getLine(), eq32.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq32.getText());
                         }
@@ -2969,7 +2995,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     {
                         try {
                             QName qname= QName.parse(staticContext, eq31.getText());
-                            test = new TypedNodeTest(context, Type.ATTRIBUTE, null, staticContext.getInScopeSchemas().resolveTypeCode(qname), false);
+                            test = new TypedNodeTest(context, Type.ATTRIBUTE, null, resolveTypeName(qname, eq31, ast), false);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq31.getLine(), eq31.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq31.getText());
                         }
@@ -3041,7 +3067,7 @@ throws PermissionDeniedException, EXistException, XPathException
                             {
                                 try {
                                     QName qname= QName.parse(staticContext, dneq1.getText());
-                                    test= new TypeTest(staticContext.getInScopeSchemas().resolveTypeCode(qname));
+                                    test= new TypeTest(resolveTypeName(qname, dneq1, ast));
                                 } catch (final IllegalQNameException iqe) {
                                     throw new XPathException(dneq1.getLine(), dneq1.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq1.getText());
                                 }
@@ -3148,7 +3174,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     {
                         try {
                             QName qname = QName.parse(staticContext, aeq32.getText());
-                            test = new TypedNodeTest(context, Type.ATTRIBUTE, test.getName(), staticContext.getInScopeSchemas().resolveTypeCode(qname), false);
+                            test = new TypedNodeTest(context, Type.ATTRIBUTE, test.getName(), resolveTypeName(qname, aeq32, aatt), false);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(aeq32.getLine(), aeq32.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + aeq32.getText());
                         }
@@ -3160,7 +3186,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     {
                         try {
                             QName qname = QName.parse(staticContext, aeq31.getText());
-                            test = new TypedNodeTest(context, Type.ATTRIBUTE, null, staticContext.getInScopeSchemas().resolveTypeCode(qname), false);
+                            test = new TypedNodeTest(context, Type.ATTRIBUTE, null, resolveTypeName(qname, aeq31, aatt), false);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(aeq31.getLine(), aeq31.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + aeq31.getText());
                         }

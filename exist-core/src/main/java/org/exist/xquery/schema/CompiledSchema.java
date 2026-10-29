@@ -170,6 +170,7 @@ public final class CompiledSchema {
             }
         }
 
+        UserTypeRegistry.registerNamespaces(key, namespaces);
         return new CompiledSchema(key, Collections.unmodifiableSet(namespaces), Map.copyOf(elements), Map.copyOf(attributes),
                 Map.copyOf(types), Collections.unmodifiableMap(members), Collections.unmodifiableMap(anonymous));
     }

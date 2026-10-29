@@ -82,6 +82,20 @@ public interface TypeAnnotationProvider {
     @Nullable SchemaKey schemaOf(DocumentImpl doc) throws XPathException;
 
     /**
+     * Find the schema that collection configurations give a target namespace, for an {@code import schema} without
+     * location hints. Only the configurations of collections the broker's current subject may read count; the schema
+     * is loaded as the configuration's owner (who configured it for the readers of the collection).
+     *
+     * @param namespaceUri the target namespace, {@code ""} for no namespace
+     * @return the schema, or null if no readable configuration has a schema for the namespace
+     * @throws XPathException {@code XQST0059} if readable configurations have different schemas for the namespace,
+     *     or the configured schema cannot be loaded
+     */
+    default @Nullable CompiledSchema configuredSchema(final String namespaceUri) throws XPathException {
+        return null;
+    }
+
+    /**
      * A check of a document about to be stored, fed with its SAX events before anything is written. It vetoes the
      * store by throwing a {@link org.xml.sax.SAXException}.
      */

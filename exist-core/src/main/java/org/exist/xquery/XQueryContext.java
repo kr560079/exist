@@ -95,6 +95,7 @@ import org.exist.xquery.schema.InScopeSchemas;
 import org.exist.xquery.schema.SchemaKey;
 import org.exist.xquery.schema.SchemaLoadException;
 import org.exist.xquery.schema.SchemaRegistry;
+import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.xquery.update.Modification;
 import org.exist.xquery.util.DocUtils;
 import org.exist.xquery.util.SerializerUtils;
@@ -2619,37 +2620,59 @@ public class XQueryContext implements BinaryValueManager, Context {
             throw new XPathException(rootExpression, ErrorCodes.XQST0059, "No database available to load a schema for namespace '" + ns + "'");
         }
         final SchemaRegistry registry = broker.getBrokerPool().getSchemaRegistry();
+        // remote schema locations: only for dba users, and only if the server allows remote schema access at all
+        final boolean allowRemote = broker.getCurrentSubject().hasDbaRole();
         final StringBuilder failures = new StringBuilder();
         if (locationHints != null && locationHints.length > 0) {
-            for (final String hint : locationHints) {
-                final String location = resolveSchemaLocation(hint);
+            for (final String location : locationHints) {
+                if (!allowRemote && isRemoteLocation(location)) {
+                    appendFailure(failures, location, "remote schema locations are not permitted");
+                    continue;
+                }
                 try {
-                    final CompiledSchema schema = registry.loadForQuery(broker, location);
+                    final CompiledSchema schema = registry.loadForQuery(broker, location, allowRemote);
                     if (schema.targetNamespaces().contains(ns)) {
                         return schema;
                     }
                     appendFailure(failures, location, "the schema has no components in the namespace");
                 } catch (final SchemaLoadException e) {
-                    appendFailure(failures, location, e.getMessage());
+                    appendFailure(failures, location, reasonOf(location, e));
                 }
             }
         } else {
-            final java.util.Optional<CompiledSchema> configured = registry.loadedForNamespace(ns);
-            if (configured.isPresent()) {
-                return configured.get();
+            // the schema collection configurations (readable by the user) give the namespace, then the catalog;
+            // never a cached schema that some other query loaded
+            final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
+            final CompiledSchema configured = provider == null ? null : provider.configuredSchema(ns);
+            if (configured != null) {
+                return configured;
             }
             try {
-                final CompiledSchema schema = registry.loadFromCatalog(broker, ns);
+                final CompiledSchema schema = registry.loadFromCatalog(broker, ns, allowRemote);
                 if (schema.targetNamespaces().contains(ns)) {
                     return schema;
                 }
                 appendFailure(failures, "catalog", "the schema has no components in the namespace");
             } catch (final SchemaLoadException e) {
-                appendFailure(failures, "catalog", e.getMessage());
+                appendFailure(failures, "catalog", reasonOf(null, e));
             }
         }
         throw new XPathException(rootExpression, ErrorCodes.XQST0059,
                 "Unable to load a schema for the target namespace '" + ns + "': " + failures);
+    }
+
+    /** the reason a schema failed to load, without the text of errors from remote sources */
+    private static String reasonOf(@Nullable final String location, final SchemaLoadException e) {
+        if ((location != null && isRemoteLocation(location)) || (e.systemId() != null && isRemoteLocation(e.systemId()))) {
+            LOG.debug("Unable to load schema {}: {}", location, e.getMessage());
+            return "the schema cannot be loaded";
+        }
+        return e.getMessage();
+    }
+
+    private static boolean isRemoteLocation(final String location) {
+        final String lower = location.trim().toLowerCase(java.util.Locale.ROOT);
+        return lower.startsWith("http:") || lower.startsWith("https:") || lower.startsWith("ftp:");
     }
 
     private static void appendFailure(final StringBuilder failures, final String location, final String reason) {
@@ -2659,16 +2682,31 @@ public class XQueryContext implements BinaryValueManager, Context {
         failures.append(location).append(": ").append(reason);
     }
 
-    /** a relative location hint is relative to the module's load path when that is in the database */
-    private String resolveSchemaLocation(final String hint) {
+    /**
+     * Resolve a relative {@code import schema} location hint (XQuery 3.1 §4.12): against the static base URI when the
+     * prolog declares it, otherwise against the module's load path when that is in the database.
+     *
+     * @param hint the location hint
+     * @return the absolute location, or the hint itself if it cannot be resolved
+     */
+    public String resolveSchemaLocation(final String hint) {
         if (hint.startsWith("/") || hint.indexOf(':') > 1) {
             return hint;
         }
-        final String loadPath = getModuleLoadPath();
-        if (loadPath != null && loadPath.startsWith(XmldbURI.XMLDB_URI_PREFIX)) {
-            return loadPath.endsWith("/") ? loadPath + hint : loadPath + "/" + hint;
+        final String base;
+        if (baseURISetInProlog && baseURI != null && !baseURI.equals(AnyURIValue.EMPTY_URI)) {
+            base = baseURI.getStringValue();
+        } else {
+            base = getModuleLoadPath();
         }
-        return hint;
+        if (base == null || base.indexOf(':') <= 1) {
+            return hint;
+        }
+        if (base.endsWith("/")) {
+            return base + hint;
+        }
+        // a base URI names a resource (its last segment is replaced); a module load path names a collection
+        return baseURISetInProlog ? base.substring(0, base.lastIndexOf('/') + 1) + hint : base + "/" + hint;
     }
 
     /**

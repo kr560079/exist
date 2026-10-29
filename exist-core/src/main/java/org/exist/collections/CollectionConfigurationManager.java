@@ -197,6 +197,28 @@ public class CollectionConfigurationManager implements BrokerPoolService {
     }
 
     /**
+     * Get the configuration objects of a custom index, by the collection they are configured on.
+     *
+     * @param customIndexId the id of the custom index
+     * @return the path of each configured collection (not of its configuration collection) to the index's
+     *     configuration object there
+     */
+    public Map<XmldbURI, Object> getCustomIndexSpecsByCollection(final String customIndexId) {
+        try (final ManagedLock<ReadWriteLock> readLock = ManagedLock.acquire(lock, LockMode.READ_LOCK)) {
+            final Map<XmldbURI, Object> configs = new java.util.LinkedHashMap<>();
+            for (final Map.Entry<CollectionURI, CollectionConfiguration> entry : configurations.entrySet()) {
+                final IndexSpec spec = entry.getValue().getIndexConfiguration();
+                final Object customConfig = spec == null ? null : spec.getCustomIndexSpec(customIndexId);
+                final String configPath = entry.getKey().toString();
+                if (customConfig != null && configPath.startsWith(CONFIG_COLLECTION + "/")) {
+                    configs.put(XmldbURI.create(configPath.substring(CONFIG_COLLECTION.length())), customConfig);
+                }
+            }
+            return configs;
+        }
+    }
+
+    /**
      * Retrieve the collection configuration instance for the given collection.
      * This creates a new CollectionConfiguration object and recursively scans
      * the collection hierarchy for available configurations.

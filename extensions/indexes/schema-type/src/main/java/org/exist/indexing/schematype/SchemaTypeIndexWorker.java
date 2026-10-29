@@ -751,6 +751,51 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     }
 
     @Override
+    public @Nullable CompiledSchema configuredSchema(final String namespaceUri) throws XPathException {
+        final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
+        if (manager == null) {
+            return null;
+        }
+        final Subject subject = broker.getCurrentSubject();
+        final Map<SchemaKey, SchemaTypeConfig> byKey = new java.util.LinkedHashMap<>();
+        final Map<SchemaKey, List<String>> collectionsByKey = new java.util.LinkedHashMap<>();
+        for (final Map.Entry<XmldbURI, Object> entry : manager.getCustomIndexSpecsByCollection(SchemaTypeIndex.ID).entrySet()) {
+            if (!(entry.getValue() instanceof SchemaTypeConfig cfg) || cfg.schema() == null
+                    || !cfg.schema().targetNamespaces().contains(namespaceUri) || !readable(entry.getKey(), subject)) {
+                continue;
+            }
+            final SchemaKey key = cfg.schema().key();
+            byKey.putIfAbsent(key, cfg);
+            collectionsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(entry.getKey().getCollectionPath());
+        }
+        if (byKey.isEmpty()) {
+            return null;
+        }
+        if (byKey.size() > 1) {
+            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
+                    "The schema for namespace '" + namespaceUri + "' is ambiguous: collections configure different schemas for it "
+                            + collectionsByKey.values());
+        }
+        final SchemaTypeConfig cfg = byKey.values().iterator().next();
+        try {
+            return loadSchema(cfg);
+        } catch (final SchemaLoadException e) {
+            LOG.debug("Unable to load the schema configured on {} for import schema: {}", collectionsByKey.values(), e.getMessage());
+            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
+                    "The schema configured for namespace '" + namespaceUri + "' on " + collectionsByKey.values() + " cannot be loaded");
+        }
+    }
+
+    /** whether the subject may read the collection */
+    private boolean readable(final XmldbURI collectionUri, final Subject subject) {
+        try (final Collection collection = broker.openCollection(collectionUri, org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+            return collection != null && collection.getPermissionsNoLock().validate(subject, org.exist.security.Permission.READ);
+        } catch (final PermissionDeniedException e) {
+            return false;
+        }
+    }
+
+    @Override
     public @Nullable SchemaKey schemaOf(final DocumentImpl doc) throws XPathException {
         final SchemaTypeConfig cfg = configOf(doc.getCollection());
         if (cfg == null) {

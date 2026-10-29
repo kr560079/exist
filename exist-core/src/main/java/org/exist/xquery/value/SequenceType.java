@@ -21,6 +21,8 @@
  */
 package org.exist.xquery.value;
 
+import javax.annotation.Nullable;
+
 import org.exist.dom.QName;
 import org.exist.dom.memtree.ReferenceNode;
 import org.exist.xquery.Cardinality;
@@ -46,6 +48,8 @@ public class SequenceType {
     private QName nodeName = null;
     private int typeAnnotation = -1;
     private boolean nillable = false;
+    /** the context of the query testing type annotations, for its per-execution caches; may be null */
+    private @Nullable org.exist.xquery.XQueryContext annotationContext = null;
     private SequenceType[] functionParamTypes;
     private SequenceType functionReturnType;
 
@@ -134,8 +138,21 @@ public class SequenceType {
      * @param nillable true if a nilled node may match
      */
     public void setTypeAnnotation(final int typeCode, final boolean nillable) {
+        setTypeAnnotation(typeCode, nillable, null);
+    }
+
+    /**
+     * Require nodes to be annotated with a subtype of the type, as in {@code element(N, T)}.
+     *
+     * @param typeCode the {@link Type} code of the type
+     * @param nillable true if a nilled node may match
+     * @param context  the context of the query, whose per-execution caches annotation tests use; or null
+     */
+    public void setTypeAnnotation(final int typeCode, final boolean nillable,
+            @Nullable final org.exist.xquery.XQueryContext context) {
         this.typeAnnotation = typeCode;
         this.nillable = nillable;
+        this.annotationContext = context;
     }
 
     public void setNodeName(QName qname) {
@@ -251,7 +268,7 @@ public class SequenceType {
         if (typeAnnotation == -1) {
             return true;
         }
-        return TypeAnnotations.matches(null, (NodeValue) node, typeAnnotation, nillable);
+        return TypeAnnotations.matches(annotationContext, (NodeValue) node, typeAnnotation, nillable);
     }
 
     /**

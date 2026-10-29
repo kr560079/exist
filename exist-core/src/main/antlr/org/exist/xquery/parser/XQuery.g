@@ -1732,13 +1732,17 @@ elementNameOrWildcard
 
 attributeTest
 :
-    "attribute"! LPAREN!
+    a:"attribute"! LPAREN!
     (
         attributeNameOrWildcard
         ( COMMA! typeName ( QUESTION )? )?
     )?
     RPAREN!
-	{ #attributeTest= #(#[ATTRIBUTE_TEST, "attribute()"], #attributeTest); }
+	{
+		#attributeTest= #(#[ATTRIBUTE_TEST, "attribute()"], #attributeTest);
+		// === Schema Aware Feature === (position of the test, for errors on its type name)
+		#attributeTest.copyLexInfo(#a);
+	}
 	;
 
 attributeNameOrWildcard

@@ -40,6 +40,8 @@ public final class UserTypeRegistry {
     private static final AtomicInteger NEXT_CODE = new AtomicInteger(USER_TYPE_BASE);
     private static final Map<String, Integer> CODES = new ConcurrentHashMap<>();
     private static final Map<Integer, UserDefinedType> TYPES = new ConcurrentHashMap<>();
+    /** the target namespaces of every compiled schema, kept like the types: unaffected by schema cache eviction */
+    private static final Map<SchemaKey, java.util.Set<String>> NAMESPACES = new ConcurrentHashMap<>();
 
     /** set once the first type is registered; lets hot paths skip user-type handling entirely */
     private static volatile boolean anyRegistered = false;
@@ -73,6 +75,24 @@ public final class UserTypeRegistry {
             anyRegistered = true;
             return code;
         }
+    }
+
+    /**
+     * Remember the target namespaces of a schema; idempotent.
+     *
+     * @param schema the schema
+     * @param namespaces its target namespaces, {@code ""} for no namespace
+     */
+    public static void registerNamespaces(final SchemaKey schema, final java.util.Set<String> namespaces) {
+        NAMESPACES.putIfAbsent(schema, java.util.Set.copyOf(namespaces));
+    }
+
+    /**
+     * @param schema a schema
+     * @return its target namespaces, or null if no schema with that key was compiled
+     */
+    public static @Nullable java.util.Set<String> namespacesOf(final SchemaKey schema) {
+        return NAMESPACES.get(schema);
     }
 
     public static @Nullable UserDefinedType get(final int code) {

@@ -35,31 +35,49 @@ declare namespace t="urn:example:trade";
 declare variable $i:doc := doc('/db/schema-type-test/trade-1.xml');
 
 declare variable $i:PRIVATE := "/db/schema-type-test-private";
+declare variable $i:HIDDEN := "/db/schema-type-test-hidden";
+declare variable $i:HIDDEN_CONFIG := "/db/system/config/db/schema-type-test-hidden";
 declare variable $i:LIB := "/db/schema-type-test-lib";
 
+(: the hint is relative: it resolves against the module's load path :)
 declare variable $i:LIB_MODULE := '
 module namespace l="urn:test:schema-type:lib";
-import schema namespace t="urn:example:trade" at "xmldb:exist:///db/schema-type-test/trade.xsd";
+import schema namespace t="urn:example:trade" at "../schema-type-test/trade.xsd";
 declare function l:swaps($d as node()) as xs:integer { count($d//element(*, t:Swap)) };
+';
+
+(: no import schema: the schema imports of an importing module do not apply here :)
+declare variable $i:LIB2_MODULE := '
+module namespace l2="urn:test:schema-type:lib2";
+declare namespace t="urn:example:trade";
+declare function l2:f() { 1 instance of t:NonNegativeDecimal };
 ';
 
 declare %test:setUp function i:setUp() {
     fx:setUp(),
-    (: a copy of the schema only its owner (the admin) may read :)
+    (: a schema only its owner (the admin) may read, configured on a collection only the admin may read :)
     let $private := xmldb:create-collection("/db", "schema-type-test-private")
-    for $name in ("trade-common.xsd", "trade.xsd")
-    let $stored := fx:store-fixture($i:PRIVATE, $name)
+    let $stored := fx:store-fixture($i:PRIVATE, "secret.xsd")
+    let $chmod := sm:chmod(xs:anyURI($i:PRIVATE || "/secret.xsd"), "rw-------")
+    let $hidden := xmldb:create-collection("/db", "schema-type-test-hidden")
+    let $hidden-chmod := sm:chmod(xs:anyURI($i:HIDDEN), "rwx------")
+    let $hidden-config := xmldb:create-collection("/db/system/config/db", "schema-type-test-hidden")
     return
-        sm:chmod(xs:anyURI($i:PRIVATE || "/" || $name), "rw-------"),
-    (: a library module importing the schema :)
+        xmldb:store($i:HIDDEN_CONFIG, "collection.xconf",
+            <collection xmlns="http://exist-db.org/collection-config/1.0">
+                <index><schema-type href="xmldb:exist://{$i:PRIVATE}/secret.xsd"/></index>
+            </collection>),
+    (: library modules :)
     let $lib := xmldb:create-collection("/db", "schema-type-test-lib")
-    return
-        xmldb:store($i:LIB, "lib.xqm", $i:LIB_MODULE, "application/xquery")
+    return (
+        xmldb:store($i:LIB, "lib.xqm", $i:LIB_MODULE, "application/xquery"),
+        xmldb:store($i:LIB, "lib2.xqm", $i:LIB2_MODULE, "application/xquery")
+    )
 };
 
 declare %test:tearDown function i:tearDown() {
     fx:tearDown(),
-    for $collection in ($i:PRIVATE, $i:LIB)
+    for $collection in ($i:HIDDEN_CONFIG, $i:HIDDEN, $i:PRIVATE, $i:LIB)
     where xmldb:collection-available($collection)
     return
         xmldb:remove($collection)
@@ -103,6 +121,18 @@ declare %test:assertEquals(1) function i:default-element-namespace() {
     util:eval('import schema default element namespace "urn:example:trade" at "xmldb:exist:///db/schema-type-test/trade.xsd"; count(doc("/db/schema-type-test/trade-1.xml")/trades)')
 };
 
+declare %test:assertEquals(2) function i:relative-hint-against-declared-base-uri() {
+    util:eval('declare base-uri "xmldb:exist:///db/schema-type-test/";
+        import schema namespace t="urn:example:trade" at "trade.xsd";
+        count(doc("/db/schema-type-test/trade-1.xml")//element(*, t:Swap))')
+};
+
+declare %test:assertEquals(1) function i:imported-type-in-function-parameter-element-test() {
+    util:eval('import schema namespace t="urn:example:trade" at "xmldb:exist:///db/schema-type-test/trade.xsd";
+        declare function local:f($e as element(*, t:Swap)*) { count($e) };
+        local:f(doc("/db/schema-type-test/trade-1.xml")//t:swap)')
+};
+
 declare %test:assertEquals(2) function i:first-resolvable-hint() {
     util:eval('import schema namespace t="urn:example:trade" at "xmldb:exist:///db/no-such-schema.xsd", "xmldb:exist:///db/schema-type-test/trade.xsd"; count(doc("/db/schema-type-test/trade-1.xml")//element(*, t:Swap))')
 };
@@ -128,10 +158,47 @@ declare %test:assertError("XQST0059") function i:file-hint-refused() {
 
 declare %test:assertError("XQST0059") function i:unreadable-schema-refused() {
     (: the owner may import the schema; another user may not, even once it is cached :)
-    let $owner := util:eval('import schema namespace t="urn:example:trade" at "xmldb:exist:///db/schema-type-test-private/trade.xsd"; 1')
+    let $owner := util:eval('import schema namespace s="urn:example:secret" at "xmldb:exist:///db/schema-type-test-private/secret.xsd"; 1')
     return
-        system:as-user("guest", "guest",
-            util:eval('import schema namespace t="urn:example:trade" at "xmldb:exist:///db/schema-type-test-private/trade.xsd"; 1'))
+        if ($owner eq 1) then
+            system:as-user("guest", "guest",
+                util:eval('import schema namespace s="urn:example:secret" at "xmldb:exist:///db/schema-type-test-private/secret.xsd"; 1'))
+        else
+            -1
+};
+
+declare %test:assertEquals(1) function i:configured-schema-on-readable-collection() {
+    (: the admin may read the collection configured with the schema: an import without a hint finds it :)
+    util:eval('import schema namespace s="urn:example:secret"; 1')
+};
+
+declare %test:assertError("XQST0059") function i:cached-schema-not-used-without-hint() {
+    (: the schema is cached (the admin imported it) and configured on a collection the guest may not read :)
+    let $owner := util:eval('import schema namespace s="urn:example:secret" at "xmldb:exist:///db/schema-type-test-private/secret.xsd"; 1')
+    return
+        if ($owner eq 1) then
+            system:as-user("guest", "guest", util:eval('import schema namespace s="urn:example:secret"; 1'))
+        else
+            -1
+};
+
+declare %test:assertTrue function i:two-configured-versions-ambiguous() {
+    let $collection := xmldb:create-collection("/db", "schema-type-test-amb")
+    let $config-collection := xmldb:create-collection("/db/system/config/db", "schema-type-test-amb")
+    let $config := xmldb:store("/db/system/config/db/schema-type-test-amb", "collection.xconf",
+        <collection xmlns="http://exist-db.org/collection-config/1.0">
+            <index><schema-type href="xmldb:exist:///db/schema-type-test-v2/trade.xsd"/></index>
+        </collection>)
+    let $result :=
+        try {
+            util:eval('import schema namespace t="urn:example:trade"; 1')
+        } catch * {
+            string($err:code) || " " || $err:description
+        }
+    let $cleanup := (xmldb:remove("/db/system/config/db/schema-type-test-amb"), xmldb:remove("/db/schema-type-test-amb"))
+    return
+        contains($result, "XQST0059") and contains($result, "ambiguous")
+            and contains($result, "/db/schema-type-test-amb") and contains($result, "/db/schema-type-test")
 };
 
 declare %test:assertEquals(1) function i:readable-schema-imported-by-other-user() {
@@ -169,6 +236,12 @@ declare %test:assertEquals(2) function i:library-module-imports-schema() {
 declare %test:assertError("XPST0051") function i:library-module-import-not-visible-to-importer() {
     util:eval('import module namespace l="urn:test:schema-type:lib" at "xmldb:exist:///db/schema-type-test-lib/lib.xqm";
         declare namespace t="urn:example:trade"; 1 instance of t:NonNegativeDecimal')
+};
+
+declare %test:assertError("XPST0051") function i:main-module-import-not-visible-to-library() {
+    util:eval('import schema namespace t="urn:example:trade" at "xmldb:exist:///db/schema-type-test/trade.xsd";
+        import module namespace l2="urn:test:schema-type:lib2" at "xmldb:exist:///db/schema-type-test-lib/lib2.xqm";
+        l2:f()')
 };
 
 (: --- type identity (spec 7.6) --- :)

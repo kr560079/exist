@@ -190,7 +190,7 @@ class ChecksummingResourceResolver implements LSResourceResolver {
         } else if (!relativeToCatalogued) {
             throw new ResolutionException("schema location not permitted (only database, catalog and, if enabled, http(s) sources are allowed): " + absolute, absolute, null);
         }
-        try (final InputStream is = URI.create(absolute).toURL().openStream()) {
+        try (final InputStream is = openRemote(absolute)) {
             uncheckable = true;
             return record(absolute, publicId, is.readAllBytes());
         } catch (final IOException | IllegalArgumentException e) {
@@ -232,6 +232,18 @@ class ChecksummingResourceResolver implements LSResourceResolver {
         catalogIds.add(id);
         uncheckable = true;
         return record(id, publicId, readAll(catalogued, id));
+    }
+
+    /** how long to wait for a remote schema location to accept the connection */
+    static final int REMOTE_CONNECT_TIMEOUT_MS = 10_000;
+    /** how long to wait for data from a remote schema location */
+    static final int REMOTE_READ_TIMEOUT_MS = 30_000;
+
+    private static InputStream openRemote(final String location) throws IOException {
+        final java.net.URLConnection connection = URI.create(location).toURL().openConnection();
+        connection.setConnectTimeout(REMOTE_CONNECT_TIMEOUT_MS);
+        connection.setReadTimeout(REMOTE_READ_TIMEOUT_MS);
+        return connection.getInputStream();
     }
 
     private LSInput record(final String id, @Nullable final String publicId, final byte[] bytes) {
@@ -290,7 +302,7 @@ class ChecksummingResourceResolver implements LSResourceResolver {
         return null;
     }
 
-    private static @Nullable String stripXmldbScheme(final String uri) {
+    static @Nullable String stripXmldbScheme(final String uri) {
         String rest;
         if (uri.startsWith(XMLDB_EXIST_PREFIX)) {
             rest = uri.substring(XMLDB_EXIST_PREFIX.length());
@@ -381,7 +393,7 @@ class ChecksummingResourceResolver implements LSResourceResolver {
             if (input.getStringData() != null) {
                 return input.getStringData().getBytes(StandardCharsets.UTF_8);
             }
-            try (final InputStream is = URI.create(id).toURL().openStream()) {
+            try (final InputStream is = openRemote(id)) {
                 return is.readAllBytes();
             }
         } catch (final IOException | IllegalArgumentException e) {
