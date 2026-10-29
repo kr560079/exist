@@ -995,7 +995,7 @@ throws PermissionDeniedException, EXistException, XPathException
                 schemaHints[h] = context.resolveSchemaLocation(((AnyURIValue) uriList.get(h)).getStringValue());
             }
             try {
-                final org.exist.xquery.schema.CompiledSchema importedSchema =
+                final org.exist.xquery.schema.ImportedSchema importedSchema =
                     staticContext.importSchema(nsPrefix, schemaNamespace, schemaHints, defaultElementNS);
                 context.declareInScopeSchema(nsPrefix, schemaNamespace, importedSchema, defaultElementNS);
             } catch (final XPathException e) {

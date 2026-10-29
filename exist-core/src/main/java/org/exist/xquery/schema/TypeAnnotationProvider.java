@@ -87,11 +87,12 @@ public interface TypeAnnotationProvider {
      * is loaded as the configuration's owner (who configured it for the readers of the collection).
      *
      * @param namespaceUri the target namespace, {@code ""} for no namespace
-     * @return the schema, or null if no readable configuration has a schema for the namespace
+     * @return the schema (recording the configured collection it came from), or null if no readable configuration has
+     *     a schema for the namespace
      * @throws XPathException {@code XQST0059} if readable configurations have different schemas for the namespace,
      *     or the configured schema cannot be loaded
      */
-    default @Nullable CompiledSchema configuredSchema(final String namespaceUri) throws XPathException {
+    default @Nullable ImportedSchema configuredSchema(final String namespaceUri) throws XPathException {
         return null;
     }
 

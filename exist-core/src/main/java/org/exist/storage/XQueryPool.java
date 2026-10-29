@@ -34,8 +34,10 @@ package org.exist.storage;
 
 import java.text.NumberFormat;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -158,7 +160,7 @@ public class XQueryPool implements BrokerPoolService {
                 return null;
             }
 
-            if (!isCompiledQueryValid(firstCompiledXQuery)) {
+            if (!isCompiledQueryValid(broker, firstCompiledXQuery)) {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("{} is invalid, removing from XQuery Pool...", source.pathOrShortIdentifier());
                 }
@@ -180,7 +182,7 @@ public class XQueryPool implements BrokerPoolService {
 
         final CompiledXQuery compiledXQuery = borrowedCompiledQuery.value;
 
-        if (!callerMayUseModulesOf(broker, compiledXQuery)) {
+        if (!callerMayUseModulesOf(broker, compiledXQuery) || !callerMayUseSchemasOf(broker, compiledXQuery)) {
             // a cache hit must never authorize what a cold compile would refuse. The caller cannot read
             // one of the imported modules, so compiling the query itself would be denied at the import
             // gate (SourceFactory#getSource). Hand the entry back untouched — it is perfectly good for
@@ -237,13 +239,55 @@ public class XQueryPool implements BrokerPoolService {
     }
 
     /**
+     * Determines whether the caller could have imported every schema imported by a pooled compiled XQuery (by the
+     * main module or an imported module), had it compiled the query itself: READ on the schema documents (or on the
+     * collection whose configuration supplied the schema), and the dba role for remote sources.
+     *
+     * @param broker the database broker
+     * @param compiledXQuery the compiled query
+     *
+     * @return true if the caller may use every imported schema (always for a query without import schema)
+     */
+    private static boolean callerMayUseSchemasOf(final DBBroker broker, final CompiledXQuery compiledXQuery) {
+        final XQueryContext context = compiledXQuery.getContext();
+        if (context == null || !context.hasSchemaImports()) {
+            return true;
+        }
+        final Subject subject = broker.getCurrentSubject();
+        for (final XQueryContext moduleContext : schemaImportingContexts(context)) {
+            if (!moduleContext.mayUseImportedSchemas(broker, subject)) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Not serving the pooled query {}, the caller may not use one of its imported schemas",
+                            compiledXQuery.getSource().pathOrShortIdentifier());
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** the context of the main module and of each imported (external) module */
+    private static List<XQueryContext> schemaImportingContexts(final XQueryContext context) {
+        final List<XQueryContext> contexts = new ArrayList<>();
+        contexts.add(context);
+        for (final Iterator<Module> it = context.getAllModules(); it.hasNext(); ) {
+            final Module module = it.next();
+            if (module instanceof ExternalModule external && external.getContext() != null && external.getContext() != context) {
+                contexts.add(external.getContext());
+            }
+        }
+        return contexts;
+    }
+
+    /**
      * Determines if a compiled XQuery is still valid.
      *
+     * @param broker the database broker
      * @param compiledXQuery the compiled query
      *
      * @return true if the compiled query is still valid, false otherwise.
      */
-    private static boolean isCompiledQueryValid(final CompiledXQuery compiledXQuery) {
+    private static boolean isCompiledQueryValid(final DBBroker broker, final CompiledXQuery compiledXQuery) {
         final Source cachedSource = compiledXQuery.getSource();
         final Source.Validity validity = cachedSource.isValid();
 
@@ -253,7 +297,25 @@ public class XQueryPool implements BrokerPoolService {
 
         // the compiled query is no longer valid if one of the imported
         // modules may have changed
-        return compiledXQuery.isValid();
+        if (!compiledXQuery.isValid()) {
+            return false;
+        }
+
+        // ... or one of the documents of an imported schema; checked independently of the caller's permissions
+        final XQueryContext context = compiledXQuery.getContext();
+        if (context != null && context.hasSchemaImports()) {
+            broker.pushSubject(broker.getBrokerPool().getSecurityManager().getSystemSubject());
+            try {
+                for (final XQueryContext moduleContext : schemaImportingContexts(context)) {
+                    if (!moduleContext.importedSchemasCurrent(broker)) {
+                        return false;
+                    }
+                }
+            } finally {
+                broker.popSubject();
+            }
+        }
+        return true;
     }
 
     /**

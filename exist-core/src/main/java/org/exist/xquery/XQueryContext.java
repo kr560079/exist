@@ -91,6 +91,7 @@ import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.parser.*;
 import org.exist.xquery.pragmas.*;
 import org.exist.xquery.schema.CompiledSchema;
+import org.exist.xquery.schema.ImportedSchema;
 import org.exist.xquery.schema.InScopeSchemas;
 import org.exist.xquery.schema.SchemaKey;
 import org.exist.xquery.schema.SchemaLoadException;
@@ -467,6 +468,10 @@ public class XQueryContext implements BinaryValueManager, Context {
     // === Schema Aware Feature ===
     /** the in-scope schema definitions of this module: the schemas of its {@code import schema} declarations */
     private InScopeSchemas inScopeSchemas = InScopeSchemas.EMPTY;
+    /** what each import schema of this module was authorized by, for re-checks when the query is reused; or null */
+    private @Nullable List<ImportedSchema> importedSchemas;
+    /** on the root context: true if this module or any module it imports has an import schema */
+    private volatile boolean anySchemaImports;
     /** document id to the key of the schema it was annotated with, for type identity checks (spec 7.6) */
     private @Nullable it.unimi.dsi.fastutil.ints.Int2ObjectMap<SchemaKey> annotatingSchemas;
     // === End Schema Aware Feature ===
@@ -837,6 +842,7 @@ public class XQueryContext implements BinaryValueManager, Context {
         ctx.source = this.source;
         ctx.httpContext = this.httpContext;
         ctx.inScopeSchemas = this.inScopeSchemas;
+        ctx.importedSchemas = this.importedSchemas;
     }
 
     @Override
@@ -2573,7 +2579,7 @@ public class XQueryContext implements BinaryValueManager, Context {
      * @throws XPathException {@code XQST0057} if a prefix is bound to the empty namespace, {@code XQST0058} if the
      *     namespace was imported before, {@code XQST0059} if no schema for the namespace can be loaded
      */
-    public CompiledSchema importSchema(@Nullable final String prefix, final String namespaceUri,
+    public ImportedSchema importSchema(@Nullable final String prefix, final String namespaceUri,
             @Nullable final String[] locationHints, final boolean defaultElementNamespace) throws XPathException {
         final String ns = namespaceUri == null ? "" : namespaceUri;
         if (prefix != null && ns.isEmpty()) {
@@ -2584,7 +2590,7 @@ public class XQueryContext implements BinaryValueManager, Context {
             throw new XPathException(rootExpression, ErrorCodes.XQST0058,
                     "More than one import schema for the target namespace '" + ns + "'");
         }
-        final CompiledSchema schema = loadImportedSchema(ns, locationHints);
+        final ImportedSchema schema = loadImportedSchema(ns, locationHints);
         declareInScopeSchema(prefix, ns, schema, defaultElementNamespace);
         return schema;
     }
@@ -2600,7 +2606,7 @@ public class XQueryContext implements BinaryValueManager, Context {
      * @param defaultElementNamespace true if the namespace becomes the default element namespace
      * @throws XPathException if the namespace cannot be bound
      */
-    public void declareInScopeSchema(@Nullable final String prefix, final String namespaceUri, final CompiledSchema schema,
+    public void declareInScopeSchema(@Nullable final String prefix, final String namespaceUri, final ImportedSchema schema,
             final boolean defaultElementNamespace) throws XPathException {
         if (prefix != null) {
             declareNamespace(prefix, namespaceUri);
@@ -2611,10 +2617,64 @@ public class XQueryContext implements BinaryValueManager, Context {
                 declareNamespace("", namespaceUri);
             }
         }
-        inScopeSchemas = inScopeSchemas.with(namespaceUri, schema);
+        inScopeSchemas = inScopeSchemas.with(namespaceUri, schema.schema());
+        final List<ImportedSchema> grants = importedSchemas == null ? new ArrayList<>(2) : new ArrayList<>(importedSchemas);
+        grants.add(schema);
+        importedSchemas = List.copyOf(grants);
+        anySchemaImports = true;
+        final XQueryContext root = getRootContext();
+        if (root != null) {
+            root.anySchemaImports = true;
+        }
     }
 
-    private CompiledSchema loadImportedSchema(final String ns, @Nullable final String[] locationHints) throws XPathException {
+    /**
+     * Whether the user may use what this module's {@code import schema} declarations imported, as if compiling the
+     * query (for reusing a compiled query; see {@link org.exist.storage.XQueryPool}).
+     *
+     * @param broker a broker
+     * @param subject the user
+     * @return true if the user may use every imported schema, or nothing is imported
+     */
+    public boolean mayUseImportedSchemas(final DBBroker broker, final Subject subject) {
+        final List<ImportedSchema> grants = importedSchemas;
+        if (grants == null) {
+            return true;
+        }
+        for (final ImportedSchema grant : grants) {
+            if (!grant.mayBeUsedBy(broker, subject)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @param broker a broker able to read the schema documents
+     * @return true if no database document of a schema this module imported changed since the import
+     */
+    public boolean importedSchemasCurrent(final DBBroker broker) {
+        final List<ImportedSchema> grants = importedSchemas;
+        if (grants == null) {
+            return true;
+        }
+        for (final ImportedSchema grant : grants) {
+            if (!grant.isCurrent(broker)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @return on the root context of a query: true if the main module or a module it imports has an
+     *     {@code import schema}
+     */
+    public boolean hasSchemaImports() {
+        return anySchemaImports;
+    }
+
+    private ImportedSchema loadImportedSchema(final String ns, @Nullable final String[] locationHints) throws XPathException {
         final DBBroker broker = getBroker();
         if (broker == null) {
             throw new XPathException(rootExpression, ErrorCodes.XQST0059, "No database available to load a schema for namespace '" + ns + "'");
@@ -2630,8 +2690,8 @@ public class XQueryContext implements BinaryValueManager, Context {
                     continue;
                 }
                 try {
-                    final CompiledSchema schema = registry.loadForQuery(broker, location, allowRemote);
-                    if (schema.targetNamespaces().contains(ns)) {
+                    final ImportedSchema schema = registry.loadForQuery(broker, location, allowRemote);
+                    if (schema.schema().targetNamespaces().contains(ns)) {
                         return schema;
                     }
                     appendFailure(failures, location, "the schema has no components in the namespace");
@@ -2643,13 +2703,13 @@ public class XQueryContext implements BinaryValueManager, Context {
             // the schema collection configurations (readable by the user) give the namespace, then the catalog;
             // never a cached schema that some other query loaded
             final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
-            final CompiledSchema configured = provider == null ? null : provider.configuredSchema(ns);
+            final ImportedSchema configured = provider == null ? null : provider.configuredSchema(ns);
             if (configured != null) {
                 return configured;
             }
             try {
-                final CompiledSchema schema = registry.loadFromCatalog(broker, ns, allowRemote);
-                if (schema.targetNamespaces().contains(ns)) {
+                final ImportedSchema schema = registry.loadFromCatalog(broker, ns, allowRemote);
+                if (schema.schema().targetNamespaces().contains(ns)) {
                     return schema;
                 }
                 appendFailure(failures, "catalog", "the schema has no components in the namespace");
@@ -2671,8 +2731,7 @@ public class XQueryContext implements BinaryValueManager, Context {
     }
 
     private static boolean isRemoteLocation(final String location) {
-        final String lower = location.trim().toLowerCase(java.util.Locale.ROOT);
-        return lower.startsWith("http:") || lower.startsWith("https:") || lower.startsWith("ftp:");
+        return SchemaRegistry.isRemote(location);
     }
 
     private static void appendFailure(final StringBuilder failures, final String location, final String reason) {

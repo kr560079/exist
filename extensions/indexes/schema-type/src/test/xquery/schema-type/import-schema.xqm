@@ -244,6 +244,87 @@ declare %test:assertError("XPST0051") function i:main-module-import-not-visible-
         l2:f()')
 };
 
+(: --- pooled (compiled and reused) queries --- :)
+
+declare %private function i:store-query($name as xs:string, $query as xs:string) as xs:anyURI {
+    let $path := xmldb:store($i:LIB, $name, $query, "application/xquery")
+    let $chmod := sm:chmod(xs:anyURI($path), "rwxr-xr-x")
+    return
+        xs:anyURI("xmldb:exist://" || $path)
+};
+
+declare %test:assertError("XQST0059") function i:pooled-query-no-hint-reauthorized() {
+    (: the admin's compiled query goes to the pool; reusing it must not let the guest use the secret schema :)
+    let $query := i:store-query("secret-no-hint.xq", 'import schema namespace s="urn:example:secret"; 1')
+    let $admin := (util:eval($query, true()), util:eval($query, true()))
+    return
+        if ($admin = 1) then
+            system:as-user("guest", "guest", util:eval($query, true()))
+        else
+            -1
+};
+
+declare %test:assertError("XQST0059") function i:pooled-query-hint-reauthorized() {
+    let $query := i:store-query("secret-hint.xq",
+        'import schema namespace s="urn:example:secret" at "xmldb:exist:///db/schema-type-test-private/secret.xsd"; 1')
+    let $admin := (util:eval($query, true()), util:eval($query, true()))
+    return
+        if ($admin = 1) then
+            system:as-user("guest", "guest", util:eval($query, true()))
+        else
+            -1
+};
+
+declare %test:assertEquals(1) function i:pooled-query-still-reused-by-authorized-user() {
+    (: a refused borrow hands the entry back: the admin keeps using it :)
+    let $query := i:store-query("secret-reuse.xq", 'import schema namespace s="urn:example:secret"; 1')
+    let $admin := util:eval($query, true())
+    let $guest := try { system:as-user("guest", "guest", util:eval($query, true())) } catch * { "refused" }
+    return
+        if ($guest = "refused") then util:eval($query, true()) else -1
+};
+
+declare %test:assertError("XPST0008") function i:pooled-query-sees-changed-schema() {
+    (: the pooled query compiled against the first version of the schema; the second no longer defines m:Old :)
+    let $v1 := xmldb:store($i:LIB, "mutable.xsd",
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:example:mutable">
+            <xs:simpleType name="Old"><xs:restriction base="xs:integer"/></xs:simpleType>
+        </xs:schema>)
+    let $query := i:store-query("mutable.xq",
+        'import schema namespace m="urn:example:mutable" at "xmldb:exist:///db/schema-type-test-lib/mutable.xsd"; 1 instance of m:Old')
+    let $first := util:eval($query, true())
+    let $v2 := xmldb:store($i:LIB, "mutable.xsd",
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:example:mutable">
+            <xs:simpleType name="New"><xs:restriction base="xs:integer"/></xs:simpleType>
+        </xs:schema>)
+    return
+        if ($first = false()) then util:eval($query, true()) else "unexpected"
+};
+
+declare %test:assertTrue function i:configured-schema-unavailable-message() {
+    (: the only configuration of the namespace names a schema that is gone :)
+    let $collection := xmldb:create-collection("/db", "schema-type-test-gone")
+    let $schema := xmldb:store("/db/schema-type-test-gone", "gone.xsd",
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:example:gone">
+            <xs:element name="g" type="xs:string"/>
+        </xs:schema>)
+    let $config-collection := xmldb:create-collection("/db/system/config/db", "schema-type-test-gone")
+    let $config := xmldb:store("/db/system/config/db/schema-type-test-gone", "collection.xconf",
+        <collection xmlns="http://exist-db.org/collection-config/1.0">
+            <index><schema-type href="xmldb:exist:///db/schema-type-test-gone/gone.xsd"/></index>
+        </collection>)
+    let $removed := xmldb:remove("/db/schema-type-test-gone", "gone.xsd")
+    let $result :=
+        try {
+            util:eval('import schema namespace g="urn:example:gone"; 1')
+        } catch * {
+            string($err:code) || " " || $err:description
+        }
+    let $cleanup := (xmldb:remove("/db/system/config/db/schema-type-test-gone"), xmldb:remove("/db/schema-type-test-gone"))
+    return
+        contains($result, "XQST0059") and contains($result, "Configured schema unavailable")
+};
+
 (: --- type identity (spec 7.6) --- :)
 
 declare %test:assertError("EXSA0001") function i:schema-version-mismatch() {

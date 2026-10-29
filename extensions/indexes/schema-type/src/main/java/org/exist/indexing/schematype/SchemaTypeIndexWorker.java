@@ -56,6 +56,7 @@ import org.exist.xquery.QueryRewriter;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.XQueryContext;
 import org.exist.xquery.schema.CompiledSchema;
+import org.exist.xquery.schema.ImportedSchema;
 import org.exist.xquery.schema.SchemaKey;
 import org.exist.xquery.schema.SchemaLoadException;
 import org.exist.xquery.schema.TypeAnnotation;
@@ -751,13 +752,14 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     }
 
     @Override
-    public @Nullable CompiledSchema configuredSchema(final String namespaceUri) throws XPathException {
+    public @Nullable ImportedSchema configuredSchema(final String namespaceUri) throws XPathException {
         final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
         if (manager == null) {
             return null;
         }
         final Subject subject = broker.getCurrentSubject();
         final Map<SchemaKey, SchemaTypeConfig> byKey = new java.util.LinkedHashMap<>();
+        final Map<SchemaKey, XmldbURI> firstCollection = new java.util.LinkedHashMap<>();
         final Map<SchemaKey, List<String>> collectionsByKey = new java.util.LinkedHashMap<>();
         for (final Map.Entry<XmldbURI, Object> entry : manager.getCustomIndexSpecsByCollection(SchemaTypeIndex.ID).entrySet()) {
             if (!(entry.getValue() instanceof SchemaTypeConfig cfg) || cfg.schema() == null
@@ -766,6 +768,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             }
             final SchemaKey key = cfg.schema().key();
             byKey.putIfAbsent(key, cfg);
+            firstCollection.putIfAbsent(key, entry.getKey());
             collectionsByKey.computeIfAbsent(key, k -> new ArrayList<>()).add(entry.getKey().getCollectionPath());
         }
         if (byKey.isEmpty()) {
@@ -776,13 +779,15 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                     "The schema for namespace '" + namespaceUri + "' is ambiguous: collections configure different schemas for it "
                             + collectionsByKey.values());
         }
-        final SchemaTypeConfig cfg = byKey.values().iterator().next();
+        final SchemaKey key = byKey.keySet().iterator().next();
+        final SchemaTypeConfig cfg = byKey.get(key);
         try {
-            return loadSchema(cfg);
+            return loadSchemaWithDependencies(cfg).configuredOn(firstCollection.get(key));
         } catch (final SchemaLoadException e) {
             LOG.debug("Unable to load the schema configured on {} for import schema: {}", collectionsByKey.values(), e.getMessage());
+            // only collections the user may read are listed
             throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
-                    "The schema configured for namespace '" + namespaceUri + "' on " + collectionsByKey.values() + " cannot be loaded");
+                    "Configured schema unavailable for namespace '" + namespaceUri + "' on " + collectionsByKey.values());
         }
     }
 
@@ -835,6 +840,20 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 LOG.error(message, e);
             }
             throw new SchemaTypeException(ErrorCodes.EXSA0002, message, e);
+        }
+    }
+
+    /** as {@link #loadSchema(SchemaTypeConfig)}, with the sources of the schema */
+    private ImportedSchema loadSchemaWithDependencies(final SchemaTypeConfig cfg) throws SchemaLoadException {
+        final Subject owner = cfg.loadAs();
+        if (owner == null) {
+            throw new SchemaLoadException("the owner of the collection configuration document cannot be determined");
+        }
+        broker.pushSubject(owner);
+        try {
+            return broker.getBrokerPool().getSchemaRegistry().loadWithDependencies(broker, cfg.href(), cfg.allowRemote());
+        } finally {
+            broker.popSubject();
         }
     }
 

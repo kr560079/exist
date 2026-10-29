@@ -155,8 +155,18 @@ public class SchemaRegistry implements BrokerPoolService {
         return load(broker, href, allowRemote, false).schema();
     }
 
-    /** a compiled schema and the database documents (ids) it was loaded from */
-    private record Loaded(CompiledSchema schema, java.util.Set<String> databaseDocuments) {
+    /**
+     * Loads and compiles a schema like {@link #load(DBBroker, String, boolean)}, also reporting the sources it came from.
+     *
+     * @param broker the broker used to read schema documents from the database
+     * @param href the location of the schema
+     * @param allowRemote whether remote locations may be fetched (honoured only if the server-level gate is on)
+     * @return the compiled schema with the versions of its database documents
+     * @throws SchemaLoadException if the schema cannot be read, is not valid or uses a forbidden construct
+     */
+    public ImportedSchema loadWithDependencies(final DBBroker broker, final String href, final boolean allowRemote)
+            throws SchemaLoadException {
+        return load(broker, href, allowRemote, false);
     }
 
     /**
@@ -173,29 +183,18 @@ public class SchemaRegistry implements BrokerPoolService {
      * @throws SchemaLoadException if the schema cannot be read (or the subject may not read it), is not valid or uses a
      *     forbidden construct
      */
-    public CompiledSchema loadForQuery(final DBBroker broker, final String href, final boolean allowRemote) throws SchemaLoadException {
-        final Loaded loaded = load(broker, href, allowRemote, false);
-        for (final String id : loaded.databaseDocuments()) {
+    public ImportedSchema loadForQuery(final DBBroker broker, final String href, final boolean allowRemote) throws SchemaLoadException {
+        final ImportedSchema loaded = load(broker, href, allowRemote, false);
+        for (final String id : loaded.databaseVersions().keySet()) {
             checkReadable(broker, id);
         }
-        return loaded.schema();
+        return loaded;
     }
 
     private static void checkReadable(final DBBroker broker, final String id) throws SchemaLoadException {
-        final String path = ChecksummingResourceResolver.stripXmldbScheme(id);
-        if (path == null) {
-            return;
+        if (!ImportedSchema.readable(broker, broker.getCurrentSubject(), id)) {
+            throw new SchemaLoadException("permission denied reading schema document " + id, id, -1, -1, null);
         }
-        try (final org.exist.dom.persistent.LockedDocument locked = broker.getXMLResource(org.exist.xmldb.XmldbURI.create(path),
-                org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
-            if (locked != null && locked.getDocument().getPermissions().validate(broker.getCurrentSubject(),
-                    org.exist.security.Permission.READ)) {
-                return;
-            }
-        } catch (final org.exist.security.PermissionDeniedException | RuntimeException e) {
-            // denied below
-        }
-        throw new SchemaLoadException("permission denied reading schema document " + id, id, -1, -1, null);
     }
 
     /**
@@ -208,19 +207,19 @@ public class SchemaRegistry implements BrokerPoolService {
      * @return the compiled schema
      * @throws SchemaLoadException if the catalog has no usable schema for the namespace
      */
-    public CompiledSchema loadFromCatalog(final DBBroker broker, final String namespaceUri, final boolean allowRemote)
+    public ImportedSchema loadFromCatalog(final DBBroker broker, final String namespaceUri, final boolean allowRemote)
             throws SchemaLoadException {
         if (catalogResolver == null) {
             throw new SchemaLoadException("no catalog is configured to resolve namespace " + namespaceUri, null, -1, -1, null);
         }
-        final Loaded loaded = load(broker, namespaceUri, allowRemote, true);
-        for (final String id : loaded.databaseDocuments()) {
+        final ImportedSchema loaded = load(broker, namespaceUri, allowRemote, true);
+        for (final String id : loaded.databaseVersions().keySet()) {
             checkReadable(broker, id);
         }
-        return loaded.schema();
+        return loaded;
     }
 
-    private Loaded load(final DBBroker broker, final String href, final boolean allowRemote, final boolean namespace)
+    private ImportedSchema load(final DBBroker broker, final String href, final boolean allowRemote, final boolean namespace)
             throws SchemaLoadException {
         final boolean gate;
         synchronized (lock) {
@@ -236,7 +235,8 @@ public class SchemaRegistry implements BrokerPoolService {
             synchronized (lock) {
                 final CompiledSchema cached = cache.get(memoEntry.key);
                 if (cached != null) {
-                    return new Loaded(cached, memoEntry.versions.keySet());
+                    // only schemas from database documents alone are memoized
+                    return new ImportedSchema(cached, memoEntry.versions, false, null);
                 }
             }
         }
@@ -285,7 +285,8 @@ public class SchemaRegistry implements BrokerPoolService {
         }
 
         final SchemaKey key = checksum(resolver.documents());
-        final java.util.Set<String> databaseDocuments = java.util.Set.copyOf(resolver.databaseVersions().keySet());
+        final Map<String, Long> databaseVersions = Map.copyOf(resolver.databaseVersions());
+        final boolean remote = resolver.documents().keySet().stream().anyMatch(SchemaRegistry::isRemote);
         synchronized (lock) {
             if (resolver.uncheckable()) {
                 memo.remove(memoKey);
@@ -294,13 +295,13 @@ public class SchemaRegistry implements BrokerPoolService {
             }
             final CompiledSchema cached = cache.get(key);
             if (cached != null) {
-                return new Loaded(cached, databaseDocuments);
+                return new ImportedSchema(cached, databaseVersions, remote, null);
             }
         }
         final CompiledSchema compiled = CompiledSchema.compile(key, model);
         synchronized (lock) {
             final CompiledSchema raced = cache.putIfAbsent(key, compiled);
-            return new Loaded(raced != null ? raced : compiled, databaseDocuments);
+            return new ImportedSchema(raced != null ? raced : compiled, databaseVersions, remote, null);
         }
     }
 
@@ -330,6 +331,15 @@ public class SchemaRegistry implements BrokerPoolService {
             }
             return Optional.ofNullable(found);
         }
+    }
+
+    /**
+     * @param location a location
+     * @return true if it is fetched over the network ({@code http}, {@code https} or {@code ftp})
+     */
+    public static boolean isRemote(final String location) {
+        final String lower = location.trim().toLowerCase(java.util.Locale.ROOT);
+        return lower.startsWith("http:") || lower.startsWith("https:") || lower.startsWith("ftp:");
     }
 
     /** Fails closed: a security feature that cannot be set means the schema must not be loaded. */
