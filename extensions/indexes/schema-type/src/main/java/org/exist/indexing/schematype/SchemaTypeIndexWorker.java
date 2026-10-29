@@ -1183,7 +1183,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     }
 
     /** whether the current subject may read the collection */
-    private boolean mayRead(@Nullable final Collection collection) {
+    boolean mayRead(@Nullable final Collection collection) {
         return collection != null
                 && collection.getPermissionsNoLock().validate(broker.getCurrentSubject(), org.exist.security.Permission.READ);
     }

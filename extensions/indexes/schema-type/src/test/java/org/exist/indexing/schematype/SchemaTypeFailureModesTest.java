@@ -594,6 +594,28 @@ public class SchemaTypeFailureModesTest {
         assertTrue(messages(owner).contains("trade.xsd"), messages(owner));
     }
 
+    @Test
+    void rejectMessageNamesTheSchemaOnlyToCallersWhoMayReadTheCollection() throws Exception {
+        configure(XCONF_REJECT);
+        final Exception owner = assertThrows(Exception.class, () -> store(ST, "bad.xml", fixture("bad.xml")));
+        assertTrue(messages(owner).contains("EXSA0004"), messages(owner));
+        assertTrue(messages(owner).contains(HREF), messages(owner));
+
+        // others may write to the collection (and traverse it) but not read it
+        xquery("sm:chmod(xs:anyURI('/db/st'), 'rwx-wx-wx')");
+        broker.pushSubject(pool.getSecurityManager().getGuestSubject());
+        final Exception guest;
+        try {
+            guest = assertThrows(Exception.class, () -> store(ST, "bad2.xml", fixture("bad.xml")));
+        } finally {
+            broker.popSubject();
+        }
+        assertTrue(messages(guest).contains("EXSA0004"), messages(guest));
+        assertTrue(messages(guest).contains("t:bogus[1]"), messages(guest));
+        assertFalse(messages(guest).contains("trade.xsd"), messages(guest));
+        assertFalse(messages(guest).contains("/db/st-schema"), messages(guest));
+    }
+
     // --- helpers ---
 
     private void configure(final String xconf) throws Exception {

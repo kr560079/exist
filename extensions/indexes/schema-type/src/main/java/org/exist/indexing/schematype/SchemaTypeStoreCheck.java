@@ -152,7 +152,9 @@ final class SchemaTypeStoreCheck extends DefaultHandler2 implements TypeAnnotati
             if (assignment.status() == TypeAssigner.Status.UNASSIGNABLE) {
                 final String reason = assignment.reason();
                 final SchemaTypeException e = new SchemaTypeException(org.exist.xquery.ErrorCodes.EXSA0004, "node " + assignment.path()
-                        + " cannot be assigned a type by schema " + config.href() + ": " + (reason == null ? "unknown reason" : reason));
+                        + " cannot be assigned a type"
+                        // the schema's location only goes to a caller who may read the collection
+                        + (worker.mayRead(collection) ? " by schema " + config.href() : "") + ": " + (reason == null ? "unknown reason" : reason));
                 throw new SAXException(e.getMessage(), e);
             }
         }
