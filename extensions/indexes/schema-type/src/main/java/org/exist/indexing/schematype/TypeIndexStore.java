@@ -422,6 +422,19 @@ final class TypeIndexStore {
     }
 
     /**
+     * Whether a document may have entries to remove before a full pass writes it: its metadata or an annotation
+     * exists. A pass writes its annotations before the rest and the metadata last, so a document stored for the
+     * first time (or whose entries were removed with it) has neither, and needs no clearing.
+     */
+    boolean mayHaveEntries(final int docId) throws IOException {
+        if (get(intKey(DOC_META, docId)) != null) {
+            return true;
+        }
+        final byte[] annotations = intKey(ANNOTATION, docId);
+        return !keys(annotations, annotations).isEmpty();
+    }
+
+    /**
      * Remove the annotation, type member and typed value entries of a document, keeping its metadata.
      */
     void removeAnnotations(final int docId) throws IOException {

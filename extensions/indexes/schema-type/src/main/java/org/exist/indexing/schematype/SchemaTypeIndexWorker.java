@@ -462,7 +462,9 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         final TypeIndexStore store = index.store();
         if (listener.takeClear()) {
             if (full) {
-                store.removeAnnotations(docId);
+                if (store.mayHaveEntries(docId)) {
+                    store.removeAnnotations(docId);
+                }
             } else {
                 store.removeNodes(docId, listener.rootId());
             }

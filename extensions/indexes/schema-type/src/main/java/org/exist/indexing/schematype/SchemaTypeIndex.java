@@ -228,17 +228,31 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
         synchronized (tableLock) {
             final LocalTypeTable current = table(collectionId, schema);
             final CollectionMeta meta = current.meta();
-            boolean changed = !meta.schema().equals(schema.key()) || store.getCollectionMeta(collectionId) == null;
-            final Map<String, Short> ids = new LinkedHashMap<>(meta.localTypeIds());
+            // collectionsWithMeta tracks every collection whose metadata is stored: no need to read it to know
+            boolean changed = !meta.schema().equals(schema.key())
+                    || (!collectionsWithMeta.contains(collectionId) && store.getCollectionMeta(collectionId) == null);
+            final Map<String, Short> known = meta.localTypeIds();
+            Map<String, Short> ids = null;
+            short next = 0;
             for (final String typeId : typeIds) {
-                if (!ids.containsKey(typeId)) {
-                    final short next = new CollectionMeta(meta.schema(), ids).nextLocalTypeId();
+                if (!known.containsKey(typeId) && (ids == null || !ids.containsKey(typeId))) {
+                    if (ids == null) {
+                        ids = new LinkedHashMap<>(known);
+                        next = meta.nextLocalTypeId();
+                    } else if (next == Short.MAX_VALUE) {
+                        throw new IllegalStateException("Local type id table is full");
+                    } else {
+                        next++;
+                    }
                     ids.put(typeId, next);
                     changed = true;
                 }
             }
             if (!changed) {
                 return current;
+            }
+            if (ids == null) {
+                ids = new LinkedHashMap<>(known);
             }
             final CollectionMeta updated = new CollectionMeta(schema.key(), ids);
             store.putCollectionMeta(collectionId, updated);
