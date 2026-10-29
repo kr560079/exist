@@ -1072,9 +1072,16 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             if (cfg.logOutageOnce()) {
                 LOG.error(message, e);
             }
+            // the schema's location, the collection and the cause only go to a caller who may read the collection
+            if (!mayRead(collection)) {
+                throw new SchemaTypeException(ErrorCodes.EXSA0002, GENERIC_UNAVAILABLE);
+            }
             throw new SchemaTypeException(ErrorCodes.EXSA0002, message, e);
         }
     }
+
+    /** the message of {@code EXSA0002} for a caller who may not read the collection: no location, collection or cause */
+    private static final String GENERIC_UNAVAILABLE = "the schema of the collection is unavailable";
 
     /** as {@link #loadSchema(SchemaTypeConfig)}, with the sources of the schema */
     private ImportedSchema loadSchemaWithDependencies(final SchemaTypeConfig cfg) throws SchemaLoadException {
@@ -1115,7 +1122,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         final String known = index.unavailableReason(collectionId) != null ? index.unavailableReason(collectionId) : cfg.unavailableReason();
         if (!index.mayRetryLoad(collectionId)) {
             // looked a moment ago: do not hit the registry on every node
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0002, known != null ? known
+            throw unavailable(collection, known != null ? known
                     : "the schema " + cfg.href() + " of collection " + collection.getURI() + " is unavailable");
         }
         try {
@@ -1123,10 +1130,19 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             index.markAvailable(collectionId);
         } catch (final SchemaLoadException e) {
             final String reason = index.unavailableReason(collectionId);
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0002, reason != null ? reason
+            throw unavailable(collection, reason != null ? reason
                     : cfg.unavailableReason() != null ? cfg.unavailableReason()
                     : "the schema " + cfg.href() + " of collection " + collection.getURI() + " is unavailable: " + e.getMessage());
         }
+    }
+
+    /**
+     * {@code EXSA0002} with the detailed reason (it names the schema's location, the collection and the cause) only for
+     * a caller who may read the collection.
+     */
+    private XPathException unavailable(final Collection collection, final String detailed) {
+        return new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0002,
+                mayRead(collection) ? detailed : GENERIC_UNAVAILABLE);
     }
 
     /**
@@ -1146,15 +1162,21 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final boolean pending = cfg.reindexOnSchemaChange()
                     && index.scheduleReindex(doc.getCollection(), current, cfg.loadAs());
             final DocMeta meta = docMeta(doc.getDocId());
-            // the collection is only named to a caller who may read it
-            final boolean namesCollection = mayRead(doc.getCollection());
-            final String subject = namesCollection ? "the document " + doc.getURI() : "the document " + doc.getFileURI();
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0003, "The schema type index of "
-                    + subject + (meta == null ? " has no entries for the document, which was stored before the collection was configured"
-                    : " was built with schema " + meta.indexedWith().sha256() + " but the collection now uses " + current.sha256())
-                    + (pending ? "; a reindex of the collection is pending, retry shortly"
-                    : namesCollection ? "; reindex the collection with xmldb:reindex('" + doc.getCollection().getURI() + "')"
-                    : "; ask the owner of the collection to reindex it"));
+            // the collection and the schemas are only named to a caller who may read the collection
+            final boolean detailed = mayRead(doc.getCollection());
+            final String message;
+            if (!detailed) {
+                message = "The schema type index of the document " + doc.getFileURI() + " is stale"
+                        + (pending ? "; a reindex of the collection is pending, retry shortly"
+                        : "; ask the owner of the collection to reindex it");
+            } else {
+                message = "The schema type index of the document " + doc.getURI()
+                        + (meta == null ? " has no entries for the document, which was stored before the collection was configured"
+                        : " was built with schema " + meta.indexedWith().sha256() + " but the collection now uses " + current.sha256())
+                        + (pending ? "; a reindex of the collection is pending, retry shortly"
+                        : "; reindex the collection with xmldb:reindex('" + doc.getCollection().getURI() + "')");
+            }
+            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0003, message);
         } catch (final IOException e) {
             throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
@@ -1169,7 +1191,8 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     /**
      * The state of a document's type index, for diagnostics.
      *
-     * @param status      {@code typed}, {@code partial}, {@code stale} or {@code untyped}
+     * @param status      {@code typed}, {@code partial}, {@code stale}, {@code unavailable} (the schema cannot be
+     *                    loaded) or {@code untyped}
      * @param schema      the checksum of the schema the document was indexed with, or null if it has no entries
      * @param unassignable the recorded paths of the unassignable subtrees
      */
@@ -1180,15 +1203,23 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
      * Report the state of a document's type index without raising the errors a typed lookup does for a stale index.
      *
      * @param doc the document
-     * @return the state; {@code untyped} if the document's collection is not configured with a schema
-     * @throws XPathException {@code EXSA0002} if the schema of the collection is unavailable
+     * @return the state; {@code untyped} if the document's collection is not configured with a schema,
+     *     {@code unavailable} (no schema, no paths) if the collection's schema cannot be loaded
+     * @throws XPathException if the index cannot be read
      */
     public Status statusOf(final DocumentImpl doc) throws XPathException {
         final SchemaTypeConfig cfg = configOf(doc.getCollection());
         if (cfg == null) {
             return new Status("untyped", null, List.of());
         }
-        ensureAvailable(doc.getCollection(), cfg);
+        try {
+            ensureAvailable(doc.getCollection(), cfg);
+        } catch (final XPathException e) {
+            if (e.getErrorCode() == ErrorCodes.EXSA0002) {
+                return new Status("unavailable", null, List.of());
+            }
+            throw e;
+        }
         try {
             final DocMeta meta = docMeta(doc.getDocId());
             if (meta == null) {

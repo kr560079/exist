@@ -43,7 +43,7 @@ import static org.exist.xquery.functions.map.MapType.newLinearMap;
  * <ul>
  *   <li>{@code name} - the {@code xs:QName} of the type, the empty sequence for an anonymous type</li>
  *   <li>{@code is-simple} - whether it is a simple type</li>
- *   <li>{@code variety} - {@code atomic}, {@code list}, {@code union}, {@code empty}, {@code simple} (a complex type
+ *   <li>{@code variety} - absent for {@code xs:anySimpleType}; otherwise {@code atomic}, {@code list}, {@code union}, {@code empty}, {@code simple} (a complex type
  *       with simple content), {@code element-only} or {@code mixed}</li>
  *   <li>{@code base-type} - a zero-arity function returning the record of the base type, the empty sequence for
  *       {@code xs:anyType}</li>
@@ -61,7 +61,7 @@ public class FunTypeAnnotation extends BasicFunction {
     private static final String ATOMIC_NAME = "atomic-type-annotation";
 
     private static final String RECORD_DESCRIPTION = "A schema-type record: the entries name (xs:QName?, empty for an "
-            + "anonymous type), is-simple (xs:boolean), variety (xs:string), base-type (function() as map(*)?) and, "
+            + "anonymous type), is-simple (xs:boolean), variety (xs:string, absent for xs:anySimpleType), base-type (function() as map(*)?) and, "
             + "for atomic types, primitive-type (function() as map(*)).";
 
     public static final FunctionSignature FS_NODE_TYPE_ANNOTATION = functionSignature(
@@ -117,7 +117,7 @@ public class FunTypeAnnotation extends BasicFunction {
         final UserDefinedType user = UserTypeRegistry.get(code);
         final QName name;
         final boolean simple;
-        final String variety;
+        final @Nullable String variety;
         final int base;
         final int primitive;
         if (user != null) {
@@ -134,8 +134,9 @@ public class FunTypeAnnotation extends BasicFunction {
                     variety = "mixed";
                 }
                 case Type.ANY_SIMPLE_TYPE -> {
+                    // xs:anySimpleType has no {variety} in XSD, so the record has no variety entry
                     simple = true;
-                    variety = "simple";
+                    variety = null;
                 }
                 case Type.IDREFS, Type.NMTOKENS, Type.ENTITIES -> {
                     simple = true;
@@ -157,7 +158,9 @@ public class FunTypeAnnotation extends BasicFunction {
         final IMap<AtomicValue, Sequence> map = newLinearMap(null);
         map.put(new StringValue("name"), name == null ? Sequence.EMPTY_SEQUENCE : new QNameValue(context, name));
         map.put(new StringValue("is-simple"), BooleanValue.valueOf(simple));
-        map.put(new StringValue("variety"), new StringValue(variety));
+        if (variety != null) {
+            map.put(new StringValue("variety"), new StringValue(variety));
+        }
         map.put(new StringValue("base-type"), reference(context, new TypeRecordFunction(context, base, false)));
         if (primitive > 0) {
             map.put(new StringValue("primitive-type"), reference(context, new TypeRecordFunction(context, primitive, true)));

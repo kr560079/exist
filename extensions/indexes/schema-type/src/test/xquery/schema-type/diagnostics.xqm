@@ -48,7 +48,51 @@ declare variable $g:PROLOG := '
 ';
 
 declare %test:setUp function g:setUp() { fx:setUp() };
-declare %test:tearDown function g:tearDown() { fx:tearDown() };
+declare %test:tearDown function g:tearDown() {
+    (: the guest tests change the permissions of the collection: restore them whatever happened :)
+    if (xmldb:collection-available($fx:COLLECTION)) then sm:chmod(xs:anyURI($fx:COLLECTION), "rwxr-xr-x") else (),
+    for $c in ("schema-type-un", "schema-type-un2", "schema-type-amb1", "schema-type-amb2", "schema-type-st")
+    return g:drop($c),
+    fx:tearDown()
+};
+
+(: --- scratch collections with a small schema of their own (so that tests can break them) --- :)
+
+declare function g:xsd($ns as xs:string, $extra as xs:string) as element() {
+    parse-xml('<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:u="' || $ns || '" targetNamespace="' || $ns
+        || '" elementFormDefault="qualified">'
+        || '<xs:simpleType name="Code"><xs:restriction base="xs:string"/></xs:simpleType>'
+        || '<xs:element name="a" type="u:Code"/>'
+        || (if ($extra ne "") then '<xs:element name="' || $extra || '" type="u:Code"/>' else "")
+        || '</xs:schema>')/*
+};
+
+declare function g:configure($name as xs:string, $xsd as element()) {
+    (: the schema is in a collection of its own: it is not indexed with the schema it defines :)
+    let $coll := xmldb:create-collection("/db", $name)
+    let $schemas := xmldb:create-collection("/db", $name || "-schema")
+    let $s := xmldb:store("/db/" || $name || "-schema", "s.xsd", $xsd)
+    return g:store-config($name)
+};
+
+declare function g:store-config($name as xs:string) {
+    let $c := if (xmldb:collection-available("/db/system/config/db/" || $name)) then ()
+              else xmldb:create-collection("/db/system/config/db", $name)
+    return xmldb:store("/db/system/config/db/" || $name, "collection.xconf",
+        <collection xmlns="http://exist-db.org/collection-config/1.0">
+            <index><schema-type href="xmldb:exist:///db/{$name}-schema/s.xsd"/></index>
+        </collection>)
+};
+
+declare function g:drop($name as xs:string) {
+    for $c in ("/db/" || $name, "/db/" || $name || "-schema", "/db/system/config/db/" || $name)
+    where xmldb:collection-available($c)
+    return xmldb:remove($c)
+};
+
+declare function g:doc-in($name as xs:string, $ns as xs:string) as xs:string {
+    xmldb:store("/db/" || $name, "d.xml", element {QName($ns, "u:a")} { "x" })
+};
 
 declare function g:eval($expr as xs:string) {
     util:eval('declare namespace g="http://exist-db.org/xquery/test/schema-type/diagnostics";' || $g:PROLOG || $expr)
@@ -126,6 +170,34 @@ declare %test:assertEquals("anySimpleType", "anyType") function g:any-atomic-cha
     return (g:local($r?name), g:local($r?base-type()?name))
 };
 
+(: --- the records of the built-in types without a schema --- :)
+
+declare function g:keys($record as map(*)) as xs:string* { sort(map:keys($record)) };
+declare function g:any-atomic() as map(*) { fn:atomic-type-annotation(1)?base-type()?base-type() };
+declare function g:any-simple() as map(*) { g:any-atomic()?base-type() };
+
+declare %test:assertEquals("base-type", "is-simple", "name", "anySimpleType", "true", "anyType")
+function g:record-any-simple-type() {
+    let $r := g:any-simple()
+    return (g:keys($r), g:local($r?name), string($r?is-simple), g:local($r?base-type()?name))
+};
+declare %test:assertEquals("base-type", "is-simple", "name", "variety", "anyAtomicType", "true", "atomic", "anySimpleType")
+function g:record-any-atomic-type() {
+    let $r := g:any-atomic()
+    return (g:keys($r), g:local($r?name), string($r?is-simple), $r?variety, g:local($r?base-type()?name))
+};
+declare %test:assertEquals("base-type", "is-simple", "name", "variety", "untyped", "false", "mixed", "anyType")
+function g:record-untyped() {
+    let $r := fn:node-type-annotation(<a/>)
+    return (g:keys($r), g:local($r?name), string($r?is-simple), $r?variety, g:local($r?base-type()?name))
+};
+declare %test:assertEquals("base-type", "is-simple", "name", "variety", "untypedAtomic", "true", "atomic", "anyAtomicType")
+function g:record-untyped-atomic() {
+    let $r := fn:atomic-type-annotation(xs:untypedAtomic("a"))
+    return (g:keys($r), g:local($r?name), string($r?is-simple), $r?variety, g:local($r?base-type()?name))
+};
+declare %test:assertEquals(0) function g:any-simple-type-has-no-variety() { count(g:any-simple()?variety) };
+
 (: --- schema:status and schema:unassignable --- :)
 
 declare %test:assertEquals("typed") function g:status-typed() { schema:status($g:doc)?status };
@@ -166,7 +238,15 @@ declare %test:assertEquals("atomic", "list", "union", "element-only", "simple") 
     for $n in ("NonNegativeDecimal", "DateList", "DateOrDuration", "Swap", "AdjustableDate")
     return schema:types("urn:example:trade")[@name = $n]/@variety/string()
 };
-declare %test:assertEquals(0) function g:types-no-anonymous() { count(schema:types("urn:example:trade")[@name = ""]) };
+declare %test:assertTrue function g:types-no-anonymous() {
+    (: only named types are listed, each once, and the named global types of the schema are all there :)
+    let $types := schema:types("urn:example:trade")
+    return
+        exists($types) and (every $t in $types satisfies exists($t/@name) and $t/@name ne "")
+        and count($types) eq count(distinct-values($types/@name))
+        and (every $n in ("Product", "Swap", "Fra", "VanillaSwap", "AdjustableDate", "NonNegativeDecimal", "CurrencyCode",
+                          "DateList", "DecimalList", "DateOrDuration") satisfies $n = $types/@name)
+};
 declare %test:assertEquals(0) function g:types-unknown-namespace() { count(schema:types("urn:example:unknown")) };
 declare %test:assertEquals(0) function g:types-xs-namespace() { count(schema:types("http://www.w3.org/2001/XMLSchema")) };
 declare %test:assertEquals(0) function g:types-no-namespace() { count(schema:types("")) };
@@ -184,4 +264,53 @@ declare %test:assertEquals(0) function g:types-hidden-from-unreadable-collection
 };
 declare %test:assertTrue function g:types-visible-to-reader() {
     system:as-user("guest", "guest", exists(schema:types("urn:example:trade")[@name = "Swap"]))
+};
+
+(: --- unavailable and stale schemas --- :)
+
+declare %test:assertEquals("unavailable", 0) function g:status-unavailable() {
+    let $configured := g:configure("schema-type-un", g:xsd("urn:example:un", ""))
+    let $doc := g:doc-in("schema-type-un", "urn:example:un")
+    let $before := schema:status(doc($doc))?status
+    let $removed := xmldb:remove("/db/schema-type-un-schema", "s.xsd")
+    (: a failed store makes the unavailability known :)
+    let $failed := try { g:doc-in("schema-type-un", "urn:example:un") ! () } catch * { () }
+    let $status := schema:status(doc($doc))
+    let $paths := count(schema:unassignable(doc($doc)))
+    let $dropped := g:drop("schema-type-un")
+    return ($status?status, $paths + count($status?schema) + (if ($before eq "typed") then 0 else 100))
+};
+
+declare %test:assertEquals("stale", 64, "typed") function g:status-stale-older-schema-key() {
+    let $configured := g:configure("schema-type-st", g:xsd("urn:example:st", ""))
+    let $doc := g:doc-in("schema-type-st", "urn:example:st")
+    let $typed := schema:status(doc($doc))?status
+    (: another version of the schema, which the configuration picks up: the document records the older key :)
+    let $changed := xmldb:store("/db/schema-type-st-schema", "s.xsd", g:xsd("urn:example:st", "b"))
+    let $reconfigured := g:store-config("schema-type-st")
+    let $stale := schema:status(doc($doc))
+    let $reindexed := xmldb:reindex("/db/schema-type-st")
+    let $fresh := schema:status(doc($doc))?status
+    let $dropped := g:drop("schema-type-st")
+    return if ($typed ne "typed") then "was " || $typed else ($stale?status, string-length($stale?schema), $fresh)
+};
+
+(: --- schema:types of unavailable and ambiguous schemas (R50) --- :)
+
+declare %test:assertEquals("listed", 0) function g:types-unavailable-schema() {
+    let $configured := g:configure("schema-type-un2", g:xsd("urn:example:un2", ""))
+    let $before := count(schema:types("urn:example:un2")) gt 0
+    let $removed := xmldb:remove("/db/schema-type-un2-schema", "s.xsd")
+    let $after := count(schema:types("urn:example:un2"))
+    let $dropped := g:drop("schema-type-un2")
+    return (if ($before) then "listed" else "not listed", $after)
+};
+
+declare %test:assertEquals("listed", 0) function g:types-ambiguous-schema() {
+    let $first := g:configure("schema-type-amb1", g:xsd("urn:example:amb", ""))
+    let $alone := count(schema:types("urn:example:amb")) gt 0
+    let $second := g:configure("schema-type-amb2", g:xsd("urn:example:amb", "other"))
+    let $ambiguous := count(schema:types("urn:example:amb"))
+    let $dropped := (g:drop("schema-type-amb1"), g:drop("schema-type-amb2"))
+    return (if ($alone) then "listed" else "not listed", $ambiguous)
 };

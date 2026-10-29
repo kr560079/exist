@@ -533,6 +533,67 @@ public class SchemaTypeFailureModesTest {
         assertTrue(pool.getSchemaRegistry().get(config().schema().key()).isPresent());
     }
 
+    @Test
+    void staleMessageNamesTheCollectionOnlyToCallersWhoMayReadIt() throws Exception {
+        configure(XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        modifyXsd();
+        configure(XCONF_OK);   // recomputes the collection's schema key
+        final NodeProxy amount = amount("/db/st/t1.xml");
+
+        final String reader = annotationErrorMessage(amount, "EXSA0003", false);
+        assertTrue(reader.contains("xmldb:reindex('/db/st')"), reader);
+
+        xquery("sm:chmod(xs:anyURI('/db/st'), 'rwx------')");
+        final String guest = annotationErrorMessage(amount, "EXSA0003", true);
+        assertFalse(guest.contains("/db/st"), guest);
+        assertFalse(guest.contains("xmldb:reindex"), guest);
+        assertFalse(guest.matches("(?s).*[0-9a-f]{64}.*"), "no schema checksum: " + guest);
+        assertTrue(guest.contains("stale"), guest);
+    }
+
+    @Test
+    void unavailableMessageNamesTheSchemaOnlyToCallersWhoMayReadTheCollection() throws Exception {
+        configure(XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        final NodeProxy amount = amount("/db/st/t1.xml");
+        remove(SCHEMAS, "trade.xsd");
+        assertThrows(Exception.class, () -> store(ST, "t2.xml", fixture("trade-1.xml")));   // makes the outage known
+
+        final String reader = annotationErrorMessage(amount, "EXSA0002", false);
+        assertTrue(reader.contains("trade.xsd"), reader);
+
+        xquery("sm:chmod(xs:anyURI('/db/st'), 'rwx------')");
+        final String guest = annotationErrorMessage(amount, "EXSA0002", true);
+        assertFalse(guest.contains("trade.xsd"), guest);
+        assertFalse(guest.contains("/db/st"), guest);
+        assertTrue(guest.contains("unavailable"), guest);
+    }
+
+    @Test
+    void unavailableMessageOfAStoreHidesTheSchemaFromAWriterWhoMayNotReadTheCollection() throws Exception {
+        configure(XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        remove(SCHEMAS, "trade.xsd");
+
+        // others may write to the collection (and traverse it) but not read it
+        xquery("sm:chmod(xs:anyURI('/db/st'), 'rwx-wx-wx')");
+        broker.pushSubject(pool.getSecurityManager().getGuestSubject());
+        final Exception guest;
+        try {
+            guest = assertThrows(Exception.class, () -> store(ST, "t2.xml", fixture("trade-1.xml")));
+        } finally {
+            broker.popSubject();
+        }
+        assertTrue(messages(guest).contains("EXSA0002"), messages(guest));
+        assertFalse(messages(guest).contains("trade.xsd"), messages(guest));
+        assertFalse(messages(guest).contains("/db/st"), messages(guest));
+
+        // the owner is told why
+        final Exception owner = assertThrows(Exception.class, () -> store(ST, "t3.xml", fixture("trade-1.xml")));
+        assertTrue(messages(owner).contains("trade.xsd"), messages(owner));
+    }
+
     // --- helpers ---
 
     private void configure(final String xconf) throws Exception {
@@ -585,6 +646,23 @@ public class SchemaTypeFailureModesTest {
         final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
         final XPathException e = assertThrows(XPathException.class, () -> provider.annotationOf(amount));
         assertEquals(code, e.getErrorCode().getErrorQName().getLocalPart(), e.getMessage());
+    }
+
+    /** the message of the error the provider raises for the node, for the guest or for the broker's own subject */
+    private String annotationErrorMessage(final NodeProxy node, final String code, final boolean asGuest) throws Exception {
+        final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
+        if (asGuest) {
+            broker.pushSubject(pool.getSecurityManager().getGuestSubject());
+        }
+        try {
+            final XPathException e = assertThrows(XPathException.class, () -> provider.annotationOf(node));
+            assertEquals(code, e.getErrorCode().getErrorQName().getLocalPart(), e.getMessage());
+            return e.getMessage();
+        } finally {
+            if (asGuest) {
+                broker.popSubject();
+            }
+        }
     }
 
     private NodeProxy amount(final String docPath) throws Exception {

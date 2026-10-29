@@ -32,6 +32,7 @@ import org.exist.indexing.IndexWorker;
 import org.exist.indexing.schematype.SchemaTypeIndexWorker;
 import org.exist.xquery.BasicFunction;
 import org.exist.xquery.FunctionSignature;
+import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.XQueryContext;
 import org.exist.xquery.functions.map.MapType;
@@ -54,7 +55,8 @@ import static org.exist.xquery.FunctionDSL.*;
  * document in memory or in a collection without a schema they report {@code untyped} and nothing unassignable.
  * {@code schema:types} reveals only the types of schemas the query imported or an {@code import schema} without
  * location hint would find (those configured on collections the caller may read); for any other namespace it
- * returns the empty sequence, as for an unknown one.</p>
+ * returns the empty sequence, as for an unknown one; so does a readable configuration whose schema cannot be loaded
+ * or whose collections disagree on the schema.</p>
  */
 public class SchemaStatusFunctions extends BasicFunction {
 
@@ -65,6 +67,7 @@ public class SchemaStatusFunctions extends BasicFunction {
             "Reports whether the document's nodes carry schema type annotations. The map has the key status "
                     + "(typed: every node of the document was assigned a type; partial: some subtrees could not be typed; "
                     + "stale: the type index was built with another schema or not at all, reindex the collection; "
+                    + "unavailable: the collection's schema cannot be loaded; "
                     + "untyped: the document is in memory or its collection has no schema) and, if the document has "
                     + "index entries, the key schema (the checksum of the schema it was indexed with).",
             returns(Type.MAP_ITEM, "The status of the document"),
@@ -179,8 +182,16 @@ public class SchemaStatusFunctions extends BasicFunction {
         if (provider == null) {
             return null;
         }
-        final ImportedSchema configured = provider.configuredSchema(namespace);
-        return configured == null ? null : configured.schema();
+        try {
+            final ImportedSchema configured = provider.configuredSchema(namespace);
+            return configured == null ? null : configured.schema();
+        } catch (final XPathException e) {
+            if (e.getErrorCode() == ErrorCodes.XQST0059) {
+                // readable configurations whose schema cannot be loaded or disagree: no schema to list, not an error
+                return null;
+            }
+            throw e;
+        }
     }
 
     /** the number of base types of a type */
