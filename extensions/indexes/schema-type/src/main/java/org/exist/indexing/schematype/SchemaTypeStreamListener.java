@@ -245,7 +245,9 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                     if (a != null) {
                         rejectIfRequired(a);
                         pending.add(new Pending(a, collectValues ? attrib.getValue() : null, key));
-                    } else if (key != null) {
+                    }
+                    // the worker leaves unassignable nodes to the listener (in a pass: through undrained)
+                    if (key != null && (a == null || a.status() == TypeAssigner.Status.UNASSIGNABLE)) {
                         untyped.computeIfAbsent(key, k -> new ArrayList<>())
                                 .add(new TypeIndexStore.Member(attrib.getNodeId(), Node.ATTRIBUTE_NODE));
                     }

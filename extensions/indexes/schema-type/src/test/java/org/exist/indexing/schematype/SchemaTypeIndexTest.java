@@ -382,6 +382,26 @@ public class SchemaTypeIndexTest {
     }
 
     @Test
+    void unassignableStandaloneAttributeIsUntyped() throws Exception {
+        // @id is typed (xs:ID) on t:party, but t:notional allows no attribute: there it is unassignable
+        final String notional = "doc('/db/st/trades.xml')/t:trades/t:trade[1]/t:notional";
+        final String byId = "doc('/db/st/trades.xml')//t:notional[@id = '%s']";
+        assertTrue(usesSchemaTypeIndex(String.format(byId, "zz")));
+        query("update insert attribute id { 'zz' } into " + notional);
+        assertEquals(1, query("count(" + String.format(byId, "zz") + ")").itemAt(0).toJavaObject(Integer.class));
+        // the DOM API reindexes the attribute on its own (the standalone pass)
+        ((ElementImpl) node("/db/st/trades.xml", "/t:trades/t:trade[1]/t:notional").getNode()).setAttribute("id", "yy");
+        assertEquals(1, query("count(" + String.format(byId, "yy") + ")").itemAt(0).toJavaObject(Integer.class));
+        assertEquals(1, unoptimized(String.format(byId, "yy")));
+        assertFalse(usesSchemaTypeIndex(String.format(byId, "yy")));
+        // and so may an XQuery update of its value
+        query("update value " + notional + "/@id with 'xx'");
+        assertEquals(1, query("count(" + String.format(byId, "xx") + ")").itemAt(0).toJavaObject(Integer.class));
+        assertEquals(0, query("count(" + String.format(byId, "yy") + ")").itemAt(0).toJavaObject(Integer.class));
+        assertFalse(usesSchemaTypeIndex(String.format(byId, "xx")));
+    }
+
+    @Test
     void typedValuesFollowXQueryUpdates() throws Exception {
         assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "100").getLength());
         query("update value doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with '250'");

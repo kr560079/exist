@@ -172,6 +172,7 @@ declare variable $v:LONG-STRINGS := (
 (: the review's counterexample (a255 || "b", which a255 || "é..." is greater than), and literals cut within a character :)
 declare variable $v:LONG-LITERALS := ($v:A255 || "b", $v:A255 || "éx", $v:A255 || "é", $v:A254 || "中x", $v:A256, $v:A255);
 declare variable $v:LONG := <vv:items>{ $v:LONG-STRINGS ! <vv:item><vv:s>{.}</vv:s></vv:item> }</vv:items>;
+declare variable $v:ATTR := <vv:items><vv:item code="a"><vv:dec>1</vv:dec></vv:item></vv:items>;
 declare variable $v:UPD := <vv:items><vv:item><vv:dec>1</vv:dec></vv:item><vv:item><vv:dec>2</vv:dec></vv:item></vv:items>;
 
 declare %test:setUp function v:setUp() {
@@ -187,6 +188,7 @@ declare %test:setUp function v:setUp() {
     xmldb:store($v:VALUES_COLLECTION, "untyped.xml", $v:UNTYPED),
     for $i in 1 to 6 return xmldb:store($v:VALUES_COLLECTION, "upd-" || $i || ".xml", $v:UPD),
     xmldb:store($v:VALUES_COLLECTION, "long.xml", $v:LONG),
+    for $i in 1 to 2 return xmldb:store($v:VALUES_COLLECTION, "attr-" || $i || ".xml", $v:ATTR),
     xmldb:reindex($v:VALUES_COLLECTION),
     xmldb:create-collection("/db", "schema-type-vrange"),
     xmldb:create-collection("/db/system/config/db", "schema-type-vrange"),
@@ -465,4 +467,29 @@ declare %test:assertEquals(8) function v:long-string-gt-count() {
 declare %test:assertEquals(2) function v:long-string-eq-count() {
     v:veval('count(doc("/db/schema-type-values/long.xml")//vv:item[vv:s = "' || $v:A255 || 'é"])')
         + v:veval('count(doc("/db/schema-type-values/long.xml")//vv:item[vv:s = "' || $v:A255 || 'éx"])')
+};
+
+(: --- standalone attributes the schema does not allow: untyped, so comparisons over their name fall back --- :)
+
+declare %test:assertTrue function v:insert-unassignable-attribute() {
+    let $before := v:vuses-index('doc("/db/schema-type-values/attr-1.xml")//vv:item[@code = "a"]')
+    (: xs:decimal content allows no attribute: @code on vv:dec is unassignable, though vv:item's @code is typed :)
+    let $u := update insert attribute code { "zz" } into doc("/db/schema-type-values/attr-1.xml")//vv:dec
+    return
+        $before and empty($u)
+        and v:vsame('doc("/db/schema-type-values/attr-1.xml")//vv:dec[@code = "zz"]')
+        and v:veval('count(doc("/db/schema-type-values/attr-1.xml")//vv:dec[@code = "zz"])') eq 1
+        and v:vsame('doc("/db/schema-type-values/attr-1.xml")//*[@code = "zz"]')
+        and v:veval('count(doc("/db/schema-type-values/attr-1.xml")//*[@code = "zz"])') eq 1
+        and not(v:vuses-index('doc("/db/schema-type-values/attr-1.xml")//vv:dec[@code = "zz"]'))
+};
+declare %test:assertTrue function v:update-value-unassignable-attribute() {
+    let $i := update insert attribute code { "zz" } into doc("/db/schema-type-values/attr-2.xml")//vv:dec
+    let $u := update value doc("/db/schema-type-values/attr-2.xml")//vv:dec/@code with "yy"
+    return
+        empty(($i, $u))
+        and v:vsame('doc("/db/schema-type-values/attr-2.xml")//vv:dec[@code = "yy"]')
+        and v:veval('count(doc("/db/schema-type-values/attr-2.xml")//vv:dec[@code = "yy"])') eq 1
+        and v:veval('count(doc("/db/schema-type-values/attr-2.xml")//vv:dec[@code = "zz"])') eq 0
+        and not(v:vuses-index('doc("/db/schema-type-values/attr-2.xml")//vv:dec[@code = "yy"]'))
 };
