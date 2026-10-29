@@ -279,9 +279,11 @@ final class TypeIndexStore {
     /**
      * Merge the summary of the nodes with a name into the document's: the union of the types and of the flags.
      */
-    void mergeSummary(final int docId, final NameKey name, final byte flags, final Set<Short> localTypeIds) throws IOException {
+    /** @param mayExist false if the document has no summaries yet (its entries were just cleared): nothing to read */
+    void mergeSummary(final int docId, final NameKey name, final byte flags, final Set<Short> localTypeIds,
+            final boolean mayExist) throws IOException {
         final byte[] key = concat(intKey(NAME_SUMMARY, docId), name.bytes());
-        final Summary old = summary(get(key));
+        final Summary old = mayExist ? summary(get(key)) : null;
         final Set<Short> types = new java.util.TreeSet<>(localTypeIds);
         byte merged = (byte) (flags & ~SUMMARY_UNTYPED);
         if (old != null) {

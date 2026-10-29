@@ -460,7 +460,10 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
         final LocalTypeTable table = index.allocate(collectionId, cfg.schema(), new LinkedHashSet<>(typeIds.values()));
         final TypeIndexStore store = index.store();
+        // the document's entries are empty from here on: a full pass's first write after clearing (or finding none)
+        boolean empty = false;
         if (listener.takeClear()) {
+            empty = full;
             if (full) {
                 if (store.mayHaveEntries(docId)) {
                     store.removeAnnotations(docId);
@@ -529,7 +532,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             store.addUntyped(docId, entry.getKey(), entry.getValue());
         }
         for (final Map.Entry<TypeIndexStore.NameKey, Byte> entry : summaryFlags.entrySet()) {
-            store.mergeSummary(docId, entry.getKey(), entry.getValue(), summaryTypes.getOrDefault(entry.getKey(), Set.of()));
+            store.mergeSummary(docId, entry.getKey(), entry.getValue(), summaryTypes.getOrDefault(entry.getKey(), Set.of()), !empty);
         }
         listener.recordUnassignable(unassignable);
 
