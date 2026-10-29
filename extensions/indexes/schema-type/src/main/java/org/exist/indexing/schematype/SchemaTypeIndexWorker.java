@@ -1146,10 +1146,57 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final boolean pending = cfg.reindexOnSchemaChange()
                     && index.scheduleReindex(doc.getCollection(), current, cfg.loadAs());
             final DocMeta meta = docMeta(doc.getDocId());
+            // the collection is only named to a caller who may read it
+            final boolean namesCollection = mayRead(doc.getCollection());
+            final String subject = namesCollection ? "the document " + doc.getURI() : "the document " + doc.getFileURI();
             throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0003, "The schema type index of "
-                    + doc.getURI() + (meta == null ? " has no entries for the document, which was stored before the collection was configured"
+                    + subject + (meta == null ? " has no entries for the document, which was stored before the collection was configured"
                     : " was built with schema " + meta.indexedWith().sha256() + " but the collection now uses " + current.sha256())
-                    + (pending ? "; a reindex of the collection is pending, retry shortly" : "; reindex the collection"));
+                    + (pending ? "; a reindex of the collection is pending, retry shortly"
+                    : namesCollection ? "; reindex the collection with xmldb:reindex('" + doc.getCollection().getURI() + "')"
+                    : "; ask the owner of the collection to reindex it"));
+        } catch (final IOException e) {
+            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+        }
+    }
+
+    /** whether the current subject may read the collection */
+    private boolean mayRead(@Nullable final Collection collection) {
+        return collection != null
+                && collection.getPermissionsNoLock().validate(broker.getCurrentSubject(), org.exist.security.Permission.READ);
+    }
+
+    /**
+     * The state of a document's type index, for diagnostics.
+     *
+     * @param status      {@code typed}, {@code partial}, {@code stale} or {@code untyped}
+     * @param schema      the checksum of the schema the document was indexed with, or null if it has no entries
+     * @param unassignable the recorded paths of the unassignable subtrees
+     */
+    public record Status(String status, @Nullable String schema, List<String> unassignable) {
+    }
+
+    /**
+     * Report the state of a document's type index without raising the errors a typed lookup does for a stale index.
+     *
+     * @param doc the document
+     * @return the state; {@code untyped} if the document's collection is not configured with a schema
+     * @throws XPathException {@code EXSA0002} if the schema of the collection is unavailable
+     */
+    public Status statusOf(final DocumentImpl doc) throws XPathException {
+        final SchemaTypeConfig cfg = configOf(doc.getCollection());
+        if (cfg == null) {
+            return new Status("untyped", null, List.of());
+        }
+        ensureAvailable(doc.getCollection(), cfg);
+        try {
+            final DocMeta meta = docMeta(doc.getDocId());
+            if (meta == null) {
+                return new Status("stale", null, List.of());
+            }
+            final String state = !meta.indexedWith().equals(cfg.schema().key()) ? "stale"
+                    : meta.status() == DocMeta.DocStatus.PARTIAL ? "partial" : "typed";
+            return new Status(state, meta.indexedWith().sha256(), meta.unassignablePaths());
         } catch (final IOException e) {
             throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }

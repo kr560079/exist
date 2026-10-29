@@ -25,5 +25,22 @@ package org.exist.xquery.value;
  * The variety of a user-defined (schema) type.
  */
 public enum Variety {
-    ATOMIC, LIST, UNION, COMPLEX_SIMPLE_CONTENT, COMPLEX_ELEMENT_ONLY, COMPLEX_MIXED, COMPLEX_EMPTY
+    ATOMIC("atomic"), LIST("list"), UNION("union"), COMPLEX_SIMPLE_CONTENT("simple"), COMPLEX_ELEMENT_ONLY("element-only"),
+    COMPLEX_MIXED("mixed"), COMPLEX_EMPTY("empty");
+
+    private final String label;
+
+    Variety(final String label) {
+        this.label = label;
+    }
+
+    /** @return the name of the variety in schema-type records ({@code fn:node-type-annotation}, {@code schema:types}) */
+    public String label() {
+        return label;
+    }
+
+    /** @return true for a simple type: an atomic, list or union type */
+    public boolean isSimple() {
+        return this == ATOMIC || this == LIST || this == UNION;
+    }
 }

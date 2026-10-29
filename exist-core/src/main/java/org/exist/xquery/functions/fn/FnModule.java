@@ -275,7 +275,11 @@ public class FnModule extends AbstractInternalModule {
         new FunctionDef(FnRandomNumberGenerator.FS_RANDOM_NUMBER_GENERATOR[0], FnRandomNumberGenerator.class),
         new FunctionDef(FnRandomNumberGenerator.FS_RANDOM_NUMBER_GENERATOR[1], FnRandomNumberGenerator.class),
         new FunctionDef(FunContainsToken.FS_CONTAINS_TOKEN[0], FunContainsToken.class),
-        new FunctionDef(FunContainsToken.FS_CONTAINS_TOKEN[1], FunContainsToken.class)
+        new FunctionDef(FunContainsToken.FS_CONTAINS_TOKEN[1], FunContainsToken.class),
+        // --- Schema Aware ---
+        new FunctionDef(FunTypeAnnotation.FS_NODE_TYPE_ANNOTATION, FunTypeAnnotation.class),
+        new FunctionDef(FunTypeAnnotation.FS_ATOMIC_TYPE_ANNOTATION, FunTypeAnnotation.class)
+        // --- End Schema Aware ---
     };
     public final static ErrorCodes.ErrorCode SENR0001 = new ErrorCodes.ErrorCode("SENR0001", "serialization error in fn:serialize");
     public final static ErrorCodes.ErrorCode SEPM0019 = new ErrorCodes.ErrorCode("SEPM0019", "It is an error if an instance of the data model " +

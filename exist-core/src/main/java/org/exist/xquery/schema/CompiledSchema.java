@@ -204,6 +204,13 @@ public final class CompiledSchema {
     }
 
     /**
+     * @return the named type definitions of the schema, including the XML Schema built-in types, in no particular order
+     */
+    public java.util.Collection<XSTypeDefinition> namedTypes() {
+        return namedTypes.values();
+    }
+
+    /**
      * Look up a type definition by the stable id under which its code is registered with
      * {@link UserTypeRegistry}: {@code {ns}local} for named types (including the XML Schema built-in
      * types), {@code #anon:<declaration path>} for anonymous types reachable from a global component.

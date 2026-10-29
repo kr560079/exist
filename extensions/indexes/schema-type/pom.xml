@@ -65,6 +65,11 @@
             <artifactId>log4j-api</artifactId>
         </dependency>
         <dependency>
+            <!-- the maps of the schema: module's functions -->
+            <groupId>io.lacuna</groupId>
+            <artifactId>bifurcan</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.google.code.findbugs</groupId>
             <artifactId>jsr305</artifactId>
         </dependency>
