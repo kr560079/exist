@@ -21,6 +21,8 @@
  */
 package org.exist.indexing.schematype;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.exist.collections.Collection;
 import org.exist.collections.CollectionConfiguration;
 import org.exist.storage.BrokerPool;
@@ -37,14 +39,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -55,11 +65,14 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * includes, xs:ID/xs:IDREF, simple-content types) and its product examples, stored in a collection configured with
  * the schema type index and typed values.
  *
- * <p>The FpML archive is downloaded by the build (see {@code src/test/resources/fpml/README.md}); the tests are
- * skipped when it is not there ({@code -Dfpml.skip=true}, or offline). Every expected value is computed from the
+ * <p>The FpML archive is downloaded by the build (see {@code src/test/resources/fpml/README.md}) and verified
+ * (SHA-256) and unpacked here; the tests are skipped when it is not there ({@code -Dfpml.skip=true}, {@code
+ * -DskipTests}, offline) or does not match the pinned checksum. Every expected value is computed from the
  * documents by a query that does not use the schema (names, string values and explicit casts only).</p>
  */
 public class FpmlEndToEndTest {
+
+    private static final Logger LOG = LogManager.getLogger(FpmlEndToEndTest.class);
 
     private static final String CC = "http://exist-db.org/collection-config/1.0";
     private static final String FPML_NS = "http://www.fpml.org/FpML-5/confirmation";
@@ -108,12 +121,31 @@ public class FpmlEndToEndTest {
     @BeforeAll
     static void storeCorpus() throws Exception {
         final String dir = System.getProperty("fpml.dir");
+        final String archive = System.getProperty("fpml.archive");
+        final String sha256 = System.getProperty("fpml.sha256");
         version = System.getProperty("fpml.version", "5-12");
-        assumeTrue(dir != null, "FpML tests skipped: system property fpml.dir is not set (run through Maven)");
-        fpmlDir = Paths.get(dir).resolve("confirmation");
+        assumeTrue(dir != null && archive != null && sha256 != null,
+                "FpML tests skipped: system properties fpml.dir, fpml.archive and fpml.sha256 are not set (run through Maven)");
+        final Path zip = Paths.get(archive);
+        assumeTrue(Files.isRegularFile(zip), "FpML tests skipped: the FpML " + version + " archive " + zip
+                + " is not there (downloaded by the build from " + System.getProperty("fpml.url")
+                + " unless -Dfpml.skip=true, -DskipTests or offline)");
+        // nothing of an earlier extraction is used, whatever the outcome
+        final Path unpacked = Paths.get(dir).resolve("unpacked");
+        delete(unpacked);
+        final String actual = sha256(zip);
+        if (!actual.equalsIgnoreCase(sha256.trim())) {
+            final String message = "FpML tests skipped: FpML archive checksum mismatch for " + zip + ": expected SHA-256 "
+                    + sha256 + " but got " + actual + ". The archive was not used. If ISDA republished the file at "
+                    + System.getProperty("fpml.url") + ", check it and update fpml.sha256 in "
+                    + "extensions/indexes/schema-type/pom.xml (and delete the cached download).";
+            LOG.warn(message);
+            System.err.println("WARNING: " + message);
+            assumeTrue(false, message);
+        }
+        fpmlDir = unpack(zip, unpacked).resolve("confirmation");
         assumeTrue(Files.isRegularFile(fpmlDir.resolve("fpml-main-" + version + ".xsd")),
-                "FpML tests skipped: the FpML " + version + " confirmation view is not in " + fpmlDir
-                        + " (downloaded by the build unless -Dfpml.skip=true or offline)");
+                "FpML tests skipped: no fpml-main-" + version + ".xsd in the archive " + zip);
 
         try (final Stream<Path> files = Files.walk(fpmlDir.resolve("products"))) {
             files.filter(p -> p.toString().endsWith(".xml")).sorted().forEach(examples::add);
@@ -123,15 +155,9 @@ public class FpmlEndToEndTest {
         final BrokerPool pool = existEmbeddedServer.getBrokerPool();
         try (final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
             storeSchemas(pool, broker, SCHEMA_COLLECTION);
-            long start = System.nanoTime();
             store(pool, broker, XmldbURI.create("/db/system/config" + DATA_COLLECTION),
                     CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, xconf(SCHEMA_COLLECTION, TYPED_VALUES));
-            final long configMillis = (System.nanoTime() - start) / 1_000_000;
-            start = System.nanoTime();
             storeExamples(pool, broker, DATA_COLLECTION);
-            final long storeMillis = (System.nanoTime() - start) / 1_000_000;
-            System.out.printf("FPML corpus: %d documents, configuration (schema compile) %d ms, store %d ms%n",
-                    examples.size(), configMillis, storeMillis);
         }
     }
 
@@ -153,13 +179,13 @@ public class FpmlEndToEndTest {
                 + "//fpml:notionalAmount[some $a in fpml:amount satisfies xs:decimal(string($a)) > 1000000])");
         assertTrue(expected > 0, "the corpus has notional amounts above one million");
         assertEquals(expected, count(SCHEMA_PROLOG + NOTIONAL_QUERY));
-        System.out.printf("FPML notional amounts above one million: %d%n", expected);
 
         final long expectedValues = number(PLAIN_PROLOG + "count(" + DATA
                 + "//fpml:initialValue[xs:decimal(string(.)) > 1000000])");
         assertTrue(expectedValues > 0);
         assertEquals(expectedValues, count(SCHEMA_PROLOG + AMOUNT_QUERY));
-        System.out.printf("FPML initial values above one million: %d%n", expectedValues);
+        // untyped data would give the same counts above (the literal casts it); this assertion, the FOTY0012 one
+        // below and the instance-of checks of adjustableDateRange are what tell typed from untyped data: keep them
         // typed values in arithmetic: the sum of the xs:decimal values, without casts
         assertEquals(string(PLAIN_PROLOG + "sum(" + DATA + "//fpml:initialValue ! xs:decimal(string(.)))"),
                 string(SCHEMA_PROLOG + "let $s := sum(" + DATA + "//fpml:initialValue) "
@@ -180,7 +206,6 @@ public class FpmlEndToEndTest {
         assertTrue(trades >= 20);
         assertEquals(trades, expected);
         assertEquals(expected, count(SCHEMA_PROLOG + PRODUCT_QUERY));
-        System.out.printf("FPML trades with a product: %d%n", expected);
 
         // anywhere in the documents: an element with the name of a member is a product unless the name is declared
         // locally with another type (not derived from the member's type). Five member names are also declared
@@ -197,14 +222,12 @@ public class FpmlEndToEndTest {
                 + "[not(self::fpml:commoditySwap and parent::fpml:commoditySwaption)])");
         assertTrue(number(PLAIN_PROLOG + "count(" + DATA + "//fpml:commoditySwaption/fpml:commoditySwap)") > 0);
         assertEquals(expectedAll, count(SCHEMA_PROLOG + ALL_PRODUCTS_QUERY));
-        System.out.printf("FPML products anywhere: %d%n", expectedAll);
     }
 
     @Test
     void partyHrefResolves() throws Exception {
         final long references = number(PLAIN_PROLOG + "count(" + DATA + "//fpml:partyReference)");
         assertTrue(references > 0);
-        System.out.printf("FPML party references: %d%n", references);
         // without the schema: each href names the id attribute of exactly one element of its document
         assertTrue(bool(PLAIN_PROLOG + "every $r in " + DATA + "//fpml:partyReference satisfies "
                 + "count(root($r)//*[@id = string($r/@href)]) eq 1"));
@@ -224,7 +247,6 @@ public class FpmlEndToEndTest {
         final long expectedDates = number(PLAIN_PROLOG + "count(" + DATA
                 + "//fpml:tradeDate[xs:date(string(.)) ge xs:date('2000-01-01')])");
         assertEquals(expectedDates, count(SCHEMA_PROLOG + TRADE_DATE_STEP_QUERY));
-        System.out.printf("FPML trades since 2000: %d, trade dates since 2000: %d%n", expected, expectedDates);
         // the typed value of an fpml:IdentifiedDate (simple content) is its xs:date
         assertTrue(bool(SCHEMA_PROLOG + "every $d in " + DATA + "//fpml:tradeHeader/fpml:tradeDate satisfies "
                 + "(data($d) instance of xs:date and $d instance of element(*, fpml:IdentifiedDate))"));
@@ -245,12 +267,10 @@ public class FpmlEndToEndTest {
     @Test
     void schemaTypeIndexAnswersTypeAndValueQueries() throws Exception {
         for (final String query : List.of(ALL_PRODUCTS_QUERY, AMOUNT_QUERY, TRADE_DATE_STEP_QUERY)) {
-            assertTrue(bool(usesIndex(SCHEMA_PROLOG + query)), "schema-type index not used: " + query);
+            assertTrue(usesIndex(SCHEMA_PROLOG + query), "schema-type index not used: " + query);
         }
-        // the others fall back to the usual evaluation (recorded, not asserted)
-        for (final String query : List.of(NOTIONAL_QUERY, PRODUCT_QUERY, HREF_QUERY, TRADE_DATE_QUERY)) {
-            System.out.printf("FPML schema-type index used=%b: %s%n", bool(usesIndex(SCHEMA_PROLOG + query)), query);
-        }
+        // the others (a child step, a two-step compared path, a compared name of unlisted types) fall back to the
+        // usual evaluation: not asserted, the T15/T16 scope
     }
 
     @Test
@@ -286,7 +306,7 @@ public class FpmlEndToEndTest {
                 + doc + "//fpml:party[@id = 'party1']"));
         for (final String query : List.of(dates, values)) {
             assertTrue(bool(same(SCHEMA_PROLOG, query)), "optimized and unoptimized differ: " + query);
-            assertTrue(bool(usesIndex(SCHEMA_PROLOG + query)), "schema-type index not used: " + query);
+            assertTrue(usesIndex(SCHEMA_PROLOG + query), "schema-type index not used: " + query);
         }
     }
 
@@ -351,15 +371,21 @@ public class FpmlEndToEndTest {
                 + "return if ($optimized = $unoptimized) then $optimized else 'different'";
     }
 
-    /** a query returning true if evaluating the query reports use of the schema-type index (system:trace) */
-    private static String usesIndex(final String query) {
-        return "declare namespace prof='http://exist-db.org/xquery/profiling'; "
-                + "let $cleared := system:clear-trace() "
-                + "let $enabled := if (empty($cleared)) then system:enable-tracing(true(), false()) else () "
-                + "let $count := if (empty($enabled)) then count(util:eval(" + literal(query) + ")) else -1 "
-                + "let $trace := if ($count ge 0) then system:trace() else () "
-                + "let $disabled := if (exists($trace)) then system:enable-tracing(false()) else () "
-                + "return empty($disabled) and exists($trace//prof:index[@type = 'schema-type'])";
+    /**
+     * true if evaluating the query reports use of the schema-type index (system:trace); tracing, global state of the
+     * shared server, is disabled again whatever happens
+     */
+    private static boolean usesIndex(final String query) throws Exception {
+        try {
+            return bool("declare namespace prof='http://exist-db.org/xquery/profiling'; "
+                    + "let $cleared := system:clear-trace() "
+                    + "let $enabled := if (empty($cleared)) then system:enable-tracing(true(), false()) else () "
+                    + "let $count := if (empty($enabled)) then count(util:eval(" + literal(query) + ")) else -1 "
+                    + "let $trace := if ($count ge 0) then system:trace() else () "
+                    + "return exists($trace//prof:index[@type = 'schema-type'])");
+        } finally {
+            query("system:enable-tracing(false())");
+        }
     }
 
     private static String literal(final String s) {
@@ -387,6 +413,58 @@ public class FpmlEndToEndTest {
 
     private static String string(final String query) throws Exception {
         return query(query).getStringValue();
+    }
+
+    // --- the archive ---
+
+    private static String sha256(final Path file) throws Exception {
+        final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (final InputStream is = Files.newInputStream(file)) {
+            final byte[] buffer = new byte[65536];
+            for (int n; (n = is.read(buffer)) > 0; ) {
+                digest.update(buffer, 0, n);
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /**
+     * Unpacks the schemas and the product examples of the (verified) archive into the emptied target directory, so
+     * that nothing of an earlier extraction is used; an entry whose path leaves the target is rejected.
+     */
+    private static Path unpack(final Path zip, final Path target) throws IOException {
+        delete(target);
+        final Path root = Files.createDirectories(target).toAbsolutePath().normalize();
+        try (final ZipFile zipFile = new ZipFile(zip.toFile())) {
+            for (final ZipEntry entry : Collections.list(zipFile.entries())) {
+                final String name = entry.getName();
+                final Path out = root.resolve(name).normalize();
+                if (!out.startsWith(root)) {
+                    throw new IOException("FpML archive entry " + name + " leaves the target directory");
+                }
+                final boolean schema = name.startsWith("confirmation/") && name.endsWith(".xsd")
+                        && name.indexOf('/', "confirmation/".length()) < 0;
+                final boolean example = name.startsWith("confirmation/products/") && name.endsWith(".xml");
+                if (entry.isDirectory() || !(schema || example)) {
+                    continue;
+                }
+                Files.createDirectories(out.getParent());
+                try (final InputStream is = zipFile.getInputStream(entry)) {
+                    Files.copy(is, out);
+                }
+            }
+        }
+        return root;
+    }
+
+    private static void delete(final Path dir) throws IOException {
+        if (Files.exists(dir)) {
+            try (final Stream<Path> old = Files.walk(dir)) {
+                for (final Path p : old.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.delete(p);
+                }
+            }
+        }
     }
 
     // --- storage ---

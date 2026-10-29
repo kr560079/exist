@@ -11,8 +11,9 @@ examples.
   - The confirmation-view documentation on fpml.org links to it, from section 1.2 of
     `https://www.fpml.org/spec/fpml-5-12-4-rec-1/html/confirmation/fpml-5-12-intro-1.html`.
   - It is served without registration.
-- **SHA-256:** `90c091f1137339cd5debfb396bc0b943d023a09f4395246ebb4bbd3d84b3b6c9`. The build verifies it.
-- **Licence:** FpML® Public License, published by ISDA at <https://www.fpml.org/license/license.html>.
+- **SHA-256:** `90c091f1137339cd5debfb396bc0b943d023a09f4395246ebb4bbd3d84b3b6c9`. The test verifies it before
+  using the archive.
+- **Licence:** FpML® Public License Version 3.0 (effective 1 February 2026), published by ISDA at <https://www.fpml.org/license/license.html>.
   - The schema headers refer to this licence.
   - FpML is a registered trademark of ISDA.
 
@@ -27,11 +28,23 @@ licence turned out to be wrong, the redistribution could not be undone.
 How the download works:
 
 - The `fpml-confirmation-view` execution of `download-maven-plugin` runs in `generate-test-resources`.
-- It fetches the pinned archive once into the Maven cache, verifies the checksum, and unpacks the schemas and
-  `products/` examples into `target/fpml/`.
-- When the archive is not there, the test skips itself with a message (JUnit assumption) and does not fail. That
-  happens when the download is disabled with `-Dfpml.skip=true`, when the build runs offline, or when the download
-  fails.
+  - It only downloads the pinned archive, to `target/fpml/confirmation-5-12_xml.zip`, through the plugin's cache in
+    the local Maven repository, so the download happens once per machine.
+  - It does not check the checksum or unpack. Plugin 1.13.0 would fail the build on a checksum mismatch even with
+    `failOnError=false`.
+  - `-Dfpml.skip=true`, `-DskipTests` and `-Dmaven.test.skip=true` skip the download.
+  - A failed download (no network, offline, HTTP error) is only a warning.
+- `FpmlEndToEndTest` then works in two steps.
+  - It computes the archive's SHA-256 and compares it with `fpml.sha256`.
+  - Only when they match does it empty `target/fpml/unpacked/` and unpack the schemas and `products/` examples into
+    it. Entries whose path would leave that directory are rejected.
+- **When the archive is missing:** the test skips itself (a JUnit assumption) and the build does not fail.
+- **When the checksum does not match** (for example, if ISDA republishes the file at the same URL):
+  - The test logs a warning with the expected and actual SHA-256 and skips itself.
+  - The mismatched archive is never unpacked or used, and the build does not fail.
+  - To move on, check the new archive, update `fpml.sha256` (and `fpml.url` / `fpml.version` if needed) in this
+    module's `pom.xml`, and delete the cached copy: `target/fpml/` and
+    `~/.m2/repository/.cache/download-maven-plugin/`.
 
 ## Corpus
 

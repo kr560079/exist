@@ -48,13 +48,15 @@
     <properties>
         <!--
             The FpML confirmation view (schemas and examples) for FpmlEndToEndTest, downloaded rather than committed
-            (see src/test/resources/fpml/README.md). -Dfpml.skip=true skips the download; the test then skips itself,
-            as it does when the download fails (offline builds do not fail).
+            (see src/test/resources/fpml/README.md). The build only downloads the archive; the test verifies its SHA-256
+            and unpacks it, and skips itself (never failing the build) when the archive is missing or does not match.
+            -Dfpml.skip=true, -DskipTests and -Dmaven.test.skip=true skip the download.
         -->
         <fpml.version>5-12</fpml.version>
         <fpml.url>https://www.fpml.org/spec/fpml-5-12-4-rec-1/xml/confirmation-5-12_xml.zip</fpml.url>
         <fpml.sha256>90c091f1137339cd5debfb396bc0b943d023a09f4395246ebb4bbd3d84b3b6c9</fpml.sha256>
         <fpml.dir>${project.build.directory}/fpml</fpml.dir>
+        <fpml.archive>confirmation-${fpml.version}_xml.zip</fpml.archive>
         <fpml.skip>false</fpml.skip>
     </properties>
 
@@ -136,8 +138,11 @@
                     <systemPropertyVariables>
                         <!-- the schema fixtures shared with exist-core's tests, read by src/test/xquery/schema-type/fixtures.xqm -->
                         <schema-type.fixtures.dir>${project.basedir}/../../../exist-core/src/test/resources/org/exist/xquery/schema/fixtures</schema-type.fixtures.dir>
-                        <!-- the unpacked FpML confirmation view, read by FpmlEndToEndTest -->
+                        <!-- the downloaded FpML confirmation view, verified and unpacked by FpmlEndToEndTest -->
                         <fpml.dir>${fpml.dir}</fpml.dir>
+                        <fpml.archive>${fpml.dir}/${fpml.archive}</fpml.archive>
+                        <fpml.sha256>${fpml.sha256}</fpml.sha256>
+                        <fpml.url>${fpml.url}</fpml.url>
                         <fpml.version>${fpml.version}</fpml.version>
                     </systemPropertyVariables>
                 </configuration>
@@ -156,23 +161,50 @@
                         <configuration>
                             <skip>${fpml.skip}</skip>
                             <url>${fpml.url}</url>
-                            <sha256>${fpml.sha256}</sha256>
-                            <alwaysVerifyChecksum>true</alwaysVerifyChecksum>
+                            <!--
+                                download only: the plugin fails the build on a checksum mismatch whatever failOnError
+                                says, so FpmlEndToEndTest checks fpml.sha256 and unpacks the archive itself
+                            -->
                             <readTimeOut>120000</readTimeOut>
                             <retries>2</retries>
                             <!-- no network: the test skips itself instead of failing the build -->
                             <failOnError>false</failOnError>
-                            <unpack>true</unpack>
-                            <includes>
-                                <include>confirmation/*.xsd</include>
-                                <include>confirmation/products/**/*.xml</include>
-                            </includes>
+                            <unpack>false</unpack>
                             <outputDirectory>${fpml.dir}</outputDirectory>
+                            <outputFileName>${fpml.archive}</outputFileName>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- no FpML download when the tests are skipped -->
+        <profile>
+            <id>fpml-skip-with-skip-tests</id>
+            <activation>
+                <property>
+                    <name>skipTests</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <fpml.skip>true</fpml.skip>
+            </properties>
+        </profile>
+        <profile>
+            <id>fpml-skip-with-maven-test-skip</id>
+            <activation>
+                <property>
+                    <name>maven.test.skip</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <properties>
+                <fpml.skip>true</fpml.skip>
+            </properties>
+        </profile>
+    </profiles>
 
 </project>
