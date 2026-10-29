@@ -85,6 +85,9 @@
         </xs:simpleContent>
     </xs:complexType>
 
+    <!-- a global attribute declaration (schema-attribute) -->
+    <xs:attribute name="role" type="xs:NCName"/>
+
     <!-- trades -->
 
     <xs:element name="trades">
@@ -119,6 +122,7 @@
                 <xs:element name="party" minOccurs="0" maxOccurs="unbounded">
                     <xs:complexType>
                         <xs:attribute name="id" type="xs:ID"/>
+                        <xs:attribute ref="t:role"/>
                     </xs:complexType>
                 </xs:element>
                 <xs:element name="partyReference" minOccurs="0">

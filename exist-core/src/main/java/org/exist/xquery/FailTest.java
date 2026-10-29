@@ -73,9 +73,13 @@ public class FailTest implements NodeTest {
         return false;
     }
 
+    /**
+     * A wildcard test is evaluated node by node, where it matches nothing; it has no name to look up in the
+     * structural index (which failed with a NullPointerException, e.g. for {@code //a/@element()}).
+     */
     @Override
     public boolean isWildcardTest() {
-        return false;
+        return true;
     }
 
     @Override

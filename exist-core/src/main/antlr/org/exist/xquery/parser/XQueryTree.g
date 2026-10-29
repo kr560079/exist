@@ -114,14 +114,52 @@ options {
         try {
             return staticContext.getInScopeSchemas().resolveTypeCode(name);
         } catch (final XPathException e) {
-            if (e.getLine() <= 0) {
-                final XQueryAST at = ast != null && ast.getLine() > 0 ? ast : enclosing;
-                if (at != null && at.getLine() > 0) {
-                    throw new XPathException(at.getLine(), at.getColumn(), e.getErrorCode(), e.getDetailMessage());
-                }
-            }
-            throw e;
+            throw positioned(e, ast, enclosing);
         }
+    }
+
+    /**
+     * Resolve the declaration of a schema-element(N) or schema-attribute(N) test against the in-scope schema
+     * definitions; an undeclared name (XPST0008) is reported at the position of the test.
+     */
+    private SchemaNodeTest.Declaration resolveSchemaDeclaration(final QName name, final boolean element,
+            final XQueryAST ast) throws XPathException {
+        try {
+            return element
+                ? SchemaNodeTest.elementDeclaration(staticContext.getInScopeSchemas(), name)
+                : SchemaNodeTest.attributeDeclaration(staticContext.getInScopeSchemas(), name);
+        } catch (final XPathException e) {
+            throw positioned(e, ast, null);
+        }
+    }
+
+    /** the name of a schema-attribute(N) test: an unprefixed name is in no namespace */
+    private QName schemaAttributeName(final XQueryAST eq, final XQueryAST at) throws XPathException {
+        try {
+            return QName.parse(staticContext, eq.getText(), XMLConstants.DEFAULT_NS_PREFIX);
+        } catch (final IllegalQNameException iqe) {
+            throw new XPathException(at.getLine(), at.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq.getText());
+        }
+    }
+
+    /** the name of a schema-element(N) test: an unprefixed name is in the default element namespace */
+    private QName schemaElementName(final XQueryAST eq, final XQueryAST at) throws XPathException {
+        try {
+            return QName.parse(staticContext, eq.getText());
+        } catch (final IllegalQNameException iqe) {
+            throw new XPathException(at.getLine(), at.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq.getText());
+        }
+    }
+
+    /** give an error without a position the position of the first of the nodes which has one */
+    private static XPathException positioned(final XPathException e, final XQueryAST ast, final XQueryAST enclosing) {
+        if (e.getLine() <= 0) {
+            final XQueryAST at = ast != null && ast.getLine() > 0 ? ast : enclosing;
+            if (at != null && at.getLine() > 0) {
+                return new XPathException(at.getLine(), at.getColumn(), e.getErrorCode(), e.getDetailMessage());
+            }
+        }
+        return e;
     }
     // === End Schema Aware Feature ===
 
@@ -1410,11 +1448,11 @@ throws XPathException
             (
                 WILDCARD
                 // === Schema Aware Feature ===
-                ( eq11:EQNAME
+                ( eq11:EQNAME ( q11:QUESTION )?
                     {
                         try {
                             QName qname11= QName.parse(staticContext, eq11.getText());
-                            type.setTypeAnnotation(resolveTypeName(qname11, eq11, lelement), false, context);
+                            type.setTypeAnnotation(resolveTypeName(qname11, eq11, lelement), q11 != null, context);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq11.getLine(), eq11.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq11.getText());
                         }
@@ -1430,11 +1468,11 @@ throws XPathException
                         throw new XPathException(eq1.getLine(), eq1.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq1.getText());
                     }
                 }
-                ( eq12:EQNAME
+                ( eq12:EQNAME ( q12:QUESTION )?
                     {
                         try {
                             QName qname12= QName.parse(staticContext, eq12.getText());
-                            type.setTypeAnnotation(resolveTypeName(qname12, eq12, lelement), false, context);
+                            type.setTypeAnnotation(resolveTypeName(qname12, eq12, lelement), q12 != null, context);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq12.getLine(), eq12.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq12.getText());
                         }
@@ -1482,6 +1520,28 @@ throws XPathException
             )?
         )
         |
+        // === Schema Aware Feature ===
+        #(
+            lse:"schema-element"
+            { type.setPrimaryType(Type.ELEMENT); }
+            seq1:EQNAME
+            {
+                final SchemaNodeTest.Declaration decl = resolveSchemaDeclaration(schemaElementName(seq1, lse), true, lse);
+                type.setSchemaDeclaration(decl.acceptedNames(), decl.declaredTypeCode(), decl.nillable(), decl.name(), context);
+            }
+        )
+        |
+        #(
+            lsa:"schema-attribute"
+            { type.setPrimaryType(Type.ATTRIBUTE); }
+            seq2:EQNAME
+            {
+                final SchemaNodeTest.Declaration decl = resolveSchemaDeclaration(schemaAttributeName(seq2, lsa), false, lsa);
+                type.setSchemaDeclaration(decl.acceptedNames(), decl.declaredTypeCode(), decl.nillable(), decl.name(), context);
+            }
+        )
+        // === End Schema Aware Feature ===
+        |
         #(
             "text" { type.setPrimaryType(Type.TEXT); }
         )
@@ -1521,21 +1581,28 @@ throws XPathException
                         try {
                             QName qname= QName.parse(staticContext, dneq.getText());
                             type.setNodeName(qname);
-                            NameTest test= new NameTest(Type.DOCUMENT, qname);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(lelement2.getLine(), lelement2.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq.getText());
                         }
                     }
+                    // === Schema Aware Feature === (the type annotation of the document element)
+                    ( dneq3:EQNAME ( dq3:QUESTION )?
+                        {
+                            try {
+                                QName qname = QName.parse(staticContext, dneq3.getText());
+                                type.setTypeAnnotation(resolveTypeName(qname, dneq3, lelement2), dq3 != null, context);
+                            } catch (final IllegalQNameException iqe) {
+                                throw new XPathException(lelement2.getLine(), lelement2.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq3.getText());
+                            }
+                        }
+                    )?
                     |
                     WILDCARD
-                    {
-                        TypeTest test= new TypeTest(Type.DOCUMENT);
-                    }
-                        ( dneq2:EQNAME
+                        ( dneq2:EQNAME ( dq2:QUESTION )?
                             {
                                 try {
                                     QName qname = QName.parse(staticContext, dneq2.getText());
-                                    test = new TypeTest(resolveTypeName(qname, dneq2, lelement2));
+                                    type.setTypeAnnotation(resolveTypeName(qname, dneq2, lelement2), dq2 != null, context);
                                 } catch (final IllegalQNameException iqe) {
                                     throw new XPathException(lelement2.getLine(), lelement2.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq2.getText());
                                 }
@@ -1544,7 +1611,13 @@ throws XPathException
                     )?
                 )
                 |
-                #( "schema-element" EQNAME )
+                // === Schema Aware Feature ===
+                #( ldse:"schema-element" dseq:EQNAME
+                    {
+                        final SchemaNodeTest.Declaration decl = resolveSchemaDeclaration(schemaElementName(dseq, ldse), true, ldse);
+                        type.setSchemaDeclaration(decl.acceptedNames(), decl.declaredTypeCode(), decl.nillable(), decl.name(), context);
+                    }
+                )
             )?
         )
     )
@@ -2933,11 +3006,11 @@ throws PermissionDeniedException, EXistException, XPathException
                     }
                 }
                 // === Schema Aware Feature ===
-                ( eq22:EQNAME
+                ( eq22:EQNAME ( q22:QUESTION )?
                     {
                         try {
                             QName qname= QName.parse(staticContext, eq22.getText());
-                            test = new TypedNodeTest(context, Type.ELEMENT, test.getName(), resolveTypeName(qname, eq22, ast), false);
+                            test = new TypedNodeTest(context, Type.ELEMENT, test.getName(), resolveTypeName(qname, eq22, ast), q22 != null);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq22.getLine(), eq22.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq22.getText());
                         }
@@ -2945,11 +3018,11 @@ throws PermissionDeniedException, EXistException, XPathException
                 )?
                 |
                 WILDCARD
-                ( eq21:EQNAME
+                ( eq21:EQNAME ( q21:QUESTION )?
                     {
                         try {
                             QName qname= QName.parse(staticContext, eq21.getText());
-                            test = new TypedNodeTest(context, Type.ELEMENT, null, resolveTypeName(qname, eq21, ast), false);
+                            test = new TypedNodeTest(context, Type.ELEMENT, null, resolveTypeName(qname, eq21, ast), q21 != null);
                         } catch (final IllegalQNameException iqe) {
                             throw new XPathException(eq21.getLine(), eq21.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + eq21.getText());
                         }
@@ -3004,6 +3077,29 @@ throws PermissionDeniedException, EXistException, XPathException
             )?
         )
         |
+        // === Schema Aware Feature ===
+        #( se:"schema-element" seeq:EQNAME
+            {
+                if (axis == Constants.ATTRIBUTE_AXIS)
+                    throw new XPathException(se, "Cannot test for schema-element() on the attribute axis");
+                test = new SchemaNodeTest(context, Type.ELEMENT,
+                    resolveSchemaDeclaration(schemaElementName(seeq, se), true, se));
+                ast = se;
+            }
+        )
+        |
+        #( sa:"schema-attribute" saeq:EQNAME
+            {
+                test = new SchemaNodeTest(context, Type.ATTRIBUTE,
+                    resolveSchemaDeclaration(schemaAttributeName(saeq, sa), false, sa));
+                ast = sa;
+                if (!axisGiven) {
+                    axis = Constants.ATTRIBUTE_AXIS;
+                }
+            }
+        )
+        // === End Schema Aware Feature ===
+        |
         com:"comment"
         {
             if (axis == Constants.ATTRIBUTE_AXIS)
@@ -3044,7 +3140,8 @@ throws PermissionDeniedException, EXistException, XPathException
             ast = nt;
         }
         |
-        dn:"document-node"
+        // === Schema Aware Feature === (a tree: the element test is a child)
+        #( dn:"document-node"
         {
             test= new TypeTest(Type.DOCUMENT);
             ast = dn;
@@ -3056,18 +3153,31 @@ throws PermissionDeniedException, EXistException, XPathException
                         {
                             try {
                                 QName qname= QName.parse(staticContext, dneq.getText());
-                                test= new NameTest(Type.DOCUMENT, qname);
+                                // === Schema Aware Feature === (tested node by node: the structural index
+                                // cannot find document nodes by the name of their document element)
+                                test = new TypedNodeTest(context, Type.DOCUMENT, qname, Type.ANY_TYPE, true);
                             } catch (final IllegalQNameException iqe) {
                                 throw new XPathException(dneq.getLine(), dneq.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq.getText());
                             }
                         }
+                        // === Schema Aware Feature === (the type annotation of the document element)
+                        ( dneq3:EQNAME ( dq3:QUESTION )?
+                            {
+                                try {
+                                    QName qname= QName.parse(staticContext, dneq3.getText());
+                                    test = new TypedNodeTest(context, Type.DOCUMENT, test.getName(), resolveTypeName(qname, dneq3, ast), dq3 != null);
+                                } catch (final IllegalQNameException iqe) {
+                                    throw new XPathException(ast.getLine(), ast.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq3.getText());
+                                }
+                            }
+                        )?
                     |
                     WILDCARD
-                        ( dneq1:EQNAME
+                        ( dneq1:EQNAME ( dq1:QUESTION )?
                             {
                                 try {
                                     QName qname= QName.parse(staticContext, dneq1.getText());
-                                    test= new TypeTest(resolveTypeName(qname, dneq1, ast));
+                                    test = new TypedNodeTest(context, Type.DOCUMENT, null, resolveTypeName(qname, dneq1, ast), dq1 != null);
                                 } catch (final IllegalQNameException iqe) {
                                     throw new XPathException(dneq1.getLine(), dneq1.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + dneq1.getText());
                                 }
@@ -3076,8 +3186,15 @@ throws PermissionDeniedException, EXistException, XPathException
                     )?
                 )
                 |
-                #( "schema-element" EQNAME )
+                // === Schema Aware Feature ===
+                #( dse:"schema-element" dseeq:EQNAME
+                    {
+                        test = new SchemaNodeTest(context, Type.DOCUMENT,
+                            resolveSchemaDeclaration(schemaElementName(dseeq, dse), true, dse));
+                    }
+                )
             )?
+        )
     )
     {
         step= new LocationStep(context, axis, test);
@@ -3122,7 +3239,7 @@ throws PermissionDeniedException, EXistException, XPathException
             test = new TypeTest(Type.ATTRIBUTE);
         }
         |
-        adn:"document-node"
+        #( adn:"document-node"
         {
             test = FailTest.INSTANCE;
             // ast = adn;
@@ -3130,15 +3247,19 @@ throws PermissionDeniedException, EXistException, XPathException
             (
                 #( "element"
                     (
-                    adneq:EQNAME
+                    adneq:EQNAME ( adneq3:EQNAME ( QUESTION )? )?
                     |
                     WILDCARD
-                    ( adneq1:EQNAME)?
+                    ( adneq1:EQNAME ( QUESTION )? )?
                     )?
                 )
                 |
-                #( "schema-element" EQNAME )
+                // === Schema Aware Feature === (resolved for its static errors; matches no attribute)
+                #( adse:"schema-element" adseeq:EQNAME
+                    { resolveSchemaDeclaration(schemaElementName(adseeq, adse), true, adse); }
+                )
             )?
+        )
         |
         #( ae:"element"
             {
@@ -3146,12 +3267,29 @@ throws PermissionDeniedException, EXistException, XPathException
                 // ast = ae;
             }
             (
-                aeq2:EQNAME ( aeq22:EQNAME )?
+                aeq2:EQNAME ( aeq22:EQNAME ( QUESTION )? )?
                 |
                 WILDCARD
-                ( aeq21:EQNAME )?
+                ( aeq21:EQNAME ( QUESTION )? )?
             )?
         )
+        |
+        // === Schema Aware Feature ===
+        #( ase:"schema-element" aseeq:EQNAME
+            {
+                // resolved for its static errors: no attribute is an element
+                resolveSchemaDeclaration(schemaElementName(aseeq, ase), true, ase);
+                test = FailTest.INSTANCE;
+            }
+        )
+        |
+        #( asa:"schema-attribute" asaeq:EQNAME
+            {
+                test = new SchemaNodeTest(context, Type.ATTRIBUTE,
+                    resolveSchemaDeclaration(schemaAttributeName(asaeq, asa), false, asa));
+            }
+        )
+        // === End Schema Aware Feature ===
         |
         #( aatt:ATTRIBUTE_TEST
             {

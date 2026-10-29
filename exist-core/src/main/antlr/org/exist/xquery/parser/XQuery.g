@@ -1273,6 +1273,10 @@ stepExpr throws XPathException
 	( ( "text" | "node" | "element" | "attribute" | "comment" | "namespace-node" | "processing-instruction" | "document-node" ) LPAREN )
 	=> axisStep
 	|
+	// === Schema Aware Feature ===
+	( ( "schema-element" | "schema-attribute" ) LPAREN ) => axisStep
+	// === End Schema Aware Feature ===
+	|
 	( ( "element" | "attribute" | "text" | "document" | "comment" |
 	  "namespace-node" | "processing-instruction" | "namespace" | "ordered" |
 	  "unordered" | "map" | "array" | "validate" ) LCURLY ) =>
@@ -1693,6 +1697,9 @@ kindTest
 :
 	textTest | anyKindTest | elementTest | attributeTest |
 	commentTest | namespaceNodeTest | piTest | documentTest
+	// === Schema Aware Feature ===
+	| schemaElementTest | schemaAttributeTest
+	// === End Schema Aware Feature ===
 	;
 
 textTest
@@ -1735,7 +1742,8 @@ attributeTest
     a:"attribute"! LPAREN!
     (
         attributeNameOrWildcard
-        ( COMMA! typeName ( QUESTION )? )?
+        // === Schema Aware Feature === (no "?": only element tests may match nilled nodes)
+        ( COMMA! typeName )?
     )?
     RPAREN!
 	{
@@ -1771,7 +1779,18 @@ documentTest
     RPAREN!
     ;
 
-schemaElementTest : "schema-element"^ LPAREN! eqName RPAREN! ;
+// === Schema Aware Feature === (the name of the declaration as an EQNAME node, as of other tests)
+schemaElementTest : "schema-element"^ LPAREN! schemaDeclarationName RPAREN! ;
+
+schemaAttributeTest : "schema-attribute"^ LPAREN! schemaDeclarationName RPAREN! ;
+
+schemaDeclarationName
+{ String eq = null; }
+:
+	eq=eqName
+	{ #schemaDeclarationName = #[EQNAME, eq]; }
+	;
+// === End Schema Aware Feature ===
 
 qName returns [String name]
 {
@@ -2379,6 +2398,10 @@ reservedKeywords returns [String name]
 	"empty-sequence" { name = "empty-sequence"; }
 	|
 	"schema-element" { name = "schema-element"; }
+	|
+	// === Schema Aware Feature ===
+	"schema-attribute" { name = "schema-attribute"; }
+	// === End Schema Aware Feature ===
 	|
 	"tumbling" { name = "tumbling"; }
 	|

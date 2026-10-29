@@ -91,7 +91,11 @@ public class ImportSchemaTest {
         void undeclaredTypeIsReportedAtItsPosition() {
             final String prolog = "import schema namespace t='" + T_NS + "' at 'xmldb:exist:///db/ist-schema/trade.xsd';\n";
             for (final String expr : new String[] {"doc('/db/ist/t1.xml')//element(*, t:Nope)", "1 instance of element(*, t:Nope)",
-                    "doc('/db/ist/t1.xml')//attribute(*, t:Nope)", "1 instance of t:Nope"}) {
+                    "doc('/db/ist/t1.xml')//attribute(*, t:Nope)", "1 instance of t:Nope",
+                    "doc('/db/ist/t1.xml')//schema-element(t:nope)", "1 instance of schema-element(t:nope)",
+                    "doc('/db/ist/t1.xml')//schema-attribute(t:nope)", "1 instance of schema-attribute(t:nope)",
+                    "doc('/db/ist/t1.xml')//@schema-attribute(t:nope)", "doc('/db/ist/t1.xml') instance of document-node(schema-element(t:nope))",
+                    "doc('/db/ist/t1.xml')/self::document-node(schema-element(t:nope))"}) {
                 final XPathException e = assertThrows(XPathException.class, () -> fx.xquery(prolog + expr), expr);
                 assertEquals("XPST0008", e.getErrorCode().getErrorQName().getLocalPart(), expr + ": " + e.getMessage());
                 assertEquals(2, e.getLine(), expr + ": " + e.getMessage());

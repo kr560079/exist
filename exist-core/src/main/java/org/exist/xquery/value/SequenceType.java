@@ -30,10 +30,14 @@ import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
 import org.exist.xquery.FunctionSignature;
 import org.exist.xquery.XPathException;
+import org.exist.xquery.SchemaNodeTest;
 import org.exist.xquery.schema.TypeAnnotations;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
+
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Represents an XQuery SequenceType and provides methods to check
@@ -50,6 +54,9 @@ public class SequenceType {
     private boolean nillable = false;
     /** the context of the query testing type annotations, for its per-execution caches; may be null */
     private @Nullable org.exist.xquery.XQueryContext annotationContext = null;
+    /** schema-element(N) / schema-attribute(N): the accepted names by namespace, or null */
+    private @Nullable Map<String, Set<String>> schemaAcceptedNames = null;
+    private @Nullable QName schemaDeclarationName = null;
     private SequenceType[] functionParamTypes;
     private SequenceType functionReturnType;
 
@@ -159,6 +166,43 @@ public class SequenceType {
         this.nodeName = qname;
     }
 
+    // === Schema Aware Feature ===
+    /**
+     * Require nodes to match a schema declaration, as in {@code schema-element(N)} and {@code schema-attribute(N)}:
+     * their name is one of the accepted names, they carry a stored annotation which is the declared type or derived
+     * from it, and they are not nilled unless the declaration is nillable. For {@code document-node(schema-element(N))}
+     * (primary type {@link Type#DOCUMENT}) the document element is tested.
+     *
+     * @param acceptedNames    the names of the declaration and, for an element, of its substitution group members
+     * @param declaredTypeCode the {@link Type} code of the declared type
+     * @param nillable         true if the declaration is nillable
+     */
+    public void setSchemaDeclaration(final Set<QName> acceptedNames, final int declaredTypeCode, final boolean nillable) {
+        setSchemaDeclaration(acceptedNames, declaredTypeCode, nillable, null, null);
+    }
+
+    /**
+     * as {@link #setSchemaDeclaration(Set, int, boolean)}
+     *
+     * @param acceptedNames    the names of the declaration and, for an element, of its substitution group members
+     * @param declaredTypeCode the {@link Type} code of the declared type
+     * @param nillable         true if the declaration is nillable
+     * @param declarationName  the name of the declaration, for messages; or null
+     * @param context          the context of the query, whose per-execution caches annotation tests use; or null
+     */
+    public void setSchemaDeclaration(final Set<QName> acceptedNames, final int declaredTypeCode, final boolean nillable,
+            @Nullable final QName declarationName, @Nullable final org.exist.xquery.XQueryContext context) {
+        this.schemaAcceptedNames = SchemaNodeTest.byNamespace(acceptedNames);
+        this.schemaDeclarationName = declarationName;
+        setTypeAnnotation(declaredTypeCode, nillable, context);
+    }
+
+    /** @return true if nodes must match a schema declaration, see {@link #setSchemaDeclaration(Set, int, boolean)} */
+    public boolean isSchemaDeclaration() {
+        return schemaAcceptedNames != null;
+    }
+    // === End Schema Aware Feature ===
+
     /**
      * Get the function parameter types for typed function tests.
      * Only set when primaryType is FUNCTION, MAP_ITEM, or ARRAY_ITEM
@@ -197,7 +241,7 @@ public class SequenceType {
      * @return true, if all items of the sequence have the same type as or a subtype of primaryType
      */
     public boolean checkType(final Sequence seq) throws XPathException {
-        if (nodeName == null) {
+        if (nodeName == null && typeAnnotation == -1) {
             return Type.subTypeOf(seq.getItemType(), primaryType);
         }
 
@@ -242,8 +286,11 @@ public class SequenceType {
             return false;
         }
 
+        if (schemaAcceptedNames != null) {
+            return matchesSchemaDeclaration(node, type);
+        }
         if (nodeName == null) {
-            return hasTypeAnnotation(node);
+            return hasTypeAnnotation(node, type);
         }
         //TODO : how to improve performance ?
         final QName realName = getRealName(node);
@@ -261,14 +308,43 @@ public class SequenceType {
                 && !nodeName.getLocalPart().equals(realName.getLocalPart())) {
             return false;
         }
-        return hasTypeAnnotation(node);
+        return hasTypeAnnotation(node, type);
     }
 
-    private boolean hasTypeAnnotation(final Item node) throws XPathException {
+    private boolean hasTypeAnnotation(final Item node, final int kind) throws XPathException {
         if (typeAnnotation == -1) {
             return true;
         }
+        if (kind == Type.DOCUMENT) {
+            // document-node(element(N, T)): the annotation of the document element
+            final Element root = documentElement((NodeValue) node);
+            return root != null && TypeAnnotations.matches(annotationContext, root, typeAnnotation, nillable);
+        }
         return TypeAnnotations.matches(annotationContext, (NodeValue) node, typeAnnotation, nillable);
+    }
+
+    private boolean matchesSchemaDeclaration(final Item item, final int kind) throws XPathException {
+        final NodeValue nodeValue = (NodeValue) item;
+        final Node node;
+        if (kind == Type.DOCUMENT) {
+            node = documentElement(nodeValue);
+            if (node == null) {
+                return false;
+            }
+        } else {
+            node = nodeValue.getNode();
+        }
+        if (!SchemaNodeTest.acceptsName(schemaAcceptedNames, node.getNamespaceURI(), node.getLocalName())) {
+            return false;
+        }
+        return kind == Type.DOCUMENT
+                ? TypeAnnotations.matches(annotationContext, node, typeAnnotation, nillable, true)
+                : TypeAnnotations.matches(annotationContext, nodeValue, typeAnnotation, nillable, true);
+    }
+
+    private static @Nullable Element documentElement(final NodeValue node) {
+        final Document doc = node instanceof Document document ? document : node.getOwnerDocument();
+        return doc == null ? null : doc.getDocumentElement();
     }
 
     /**
@@ -381,7 +457,11 @@ public class SequenceType {
         }
 
         final String str;
-        if (primaryType == Type.DOCUMENT && nodeName != null) {
+        if (schemaAcceptedNames != null) {
+            final String test = (primaryType == Type.ATTRIBUTE ? "schema-attribute(" : "schema-element(")
+                    + (schemaDeclarationName == null ? "" : schemaDeclarationName.getStringValue()) + ")";
+            str = primaryType == Type.DOCUMENT ? "document-node(" + test + ")" : test;
+        } else if (primaryType == Type.DOCUMENT && nodeName != null) {
             str = "document-node(" + nodeName.getStringValue() + ")";
         } else if (primaryType == Type.ELEMENT && nodeName != null) {
             str = "element(" + nodeName.getStringValue() + ")";

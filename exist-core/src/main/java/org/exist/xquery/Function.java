@@ -284,6 +284,10 @@ public abstract class Function extends PathExpr {
                 argument = new DynamicNameCheck(context,
                         new NameTest(argType.getPrimaryType(), argType.getNodeName()), argument);
             }
+            // === Schema Aware Feature ===
+            if (DynamicAnnotationCheck.isNeeded(argType)) {
+                argument = new DynamicAnnotationCheck(context, argType, argument);
+            }
             if (argType instanceof final FunctionParameterFunctionSequenceType functionParameterType) {
                 return new FunctionTypeCheck(context, functionParameterType, argument);
             }
@@ -320,6 +324,10 @@ public abstract class Function extends PathExpr {
         if (argType.getNodeName() != null) {
             argument = new DynamicNameCheck(context,
                     new NameTest(argType.getPrimaryType(), argType.getNodeName()), argument);
+        }
+        // === Schema Aware Feature ===
+        if (DynamicAnnotationCheck.isNeeded(argType)) {
+            argument = new DynamicAnnotationCheck(context, argType, argument);
         }
         if (argType instanceof final FunctionParameterFunctionSequenceType functionParameterType) {
             return new FunctionTypeCheck(context, functionParameterType, argument);

@@ -107,6 +107,10 @@ public class FunctionCall extends Function {
         } else if(returnType.getPrimaryType() != Type.ITEM) {
                 expression = new DynamicTypeCheck(context, returnType.getPrimaryType(), expression);
         }
+        // === Schema Aware Feature ===
+        if (DynamicAnnotationCheck.isNeeded(returnType)) {
+            expression = new DynamicAnnotationCheck(context, returnType, expression);
+        }
     }
 
     public UserDefinedFunction getFunction() {
@@ -398,6 +402,10 @@ public class FunctionCall extends Function {
                 expression = new UntypedValueCheck(context, returnType.getPrimaryType(), expression, new Error(Error.FUNC_RETURN_TYPE));
             } else if(returnType.getPrimaryType() != Type.ITEM) {
                 expression = new DynamicTypeCheck(context, returnType.getPrimaryType(), expression);
+            }
+            // === Schema Aware Feature ===
+            if (DynamicAnnotationCheck.isNeeded(returnType)) {
+                expression = new DynamicAnnotationCheck(context, returnType, expression);
             }
         }
         

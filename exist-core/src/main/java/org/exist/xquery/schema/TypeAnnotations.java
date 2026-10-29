@@ -106,11 +106,64 @@ public final class TypeAnnotations {
      */
     public static boolean matches(@Nullable final XQueryContext ctx, final NodeValue node, final int typeCode,
             final boolean nillable) throws XPathException {
+        return matches(ctx, node, typeCode, nillable, false);
+    }
+
+    /**
+     * Test whether the annotation of a node is a subtype of the given type, optionally only if the node carries a
+     * stored annotation: {@code schema-element(N)} and {@code schema-attribute(N)} never match a node no schema
+     * assessed, i.e. an in-memory node, a node of a collection without a schema, or a stored node which could not
+     * be assigned a type (it has the default annotation of its kind, not one from the index).
+     *
+     * @param ctx               the context of the query
+     * @param node              the node
+     * @param typeCode          the {@link Type} code the annotation must be a subtype of
+     * @param nillable          true if a nilled node may match
+     * @param requireAnnotation true if an unannotated node never matches
+     * @return true if the node matches
+     * @throws XPathException if the annotation cannot be determined
+     */
+    public static boolean matches(@Nullable final XQueryContext ctx, final NodeValue node, final int typeCode,
+            final boolean nillable, final boolean requireAnnotation) throws XPathException {
         final TypeAnnotation annotation = annotationOf(ctx, node);
         if (typeCode >= UserTypeRegistry.USER_TYPE_BASE && node instanceof NodeProxy proxy) {
             checkSameSchema(ctx, proxy, annotation, typeCode);
         }
+        if (requireAnnotation && isUnannotated(annotation)) {
+            return false;
+        }
         return matches(annotation, typeCode, nillable);
+    }
+
+    /**
+     * as {@link #matches(XQueryContext, NodeValue, int, boolean, boolean)} for a DOM node
+     *
+     * @param ctx               the context of the query
+     * @param node              the node
+     * @param typeCode          the {@link Type} code the annotation must be a subtype of
+     * @param nillable          true if a nilled node may match
+     * @param requireAnnotation true if an unannotated node never matches
+     * @return true if the node matches
+     * @throws XPathException if the annotation cannot be determined
+     */
+    public static boolean matches(@Nullable final XQueryContext ctx, final Node node, final int typeCode,
+            final boolean nillable, final boolean requireAnnotation) throws XPathException {
+        if (node instanceof NodeValue nodeValue) {
+            return matches(ctx, nodeValue, typeCode, nillable, requireAnnotation);
+        }
+        if (node instanceof NodeHandle stored) {
+            return matches(ctx, new NodeProxy(stored), typeCode, nillable, requireAnnotation);
+        }
+        return !requireAnnotation && matches(annotationOf(ctx, node), typeCode, nillable);
+    }
+
+    /**
+     * The shared default annotations stand for nodes without a stored annotation: the provider returns new
+     * instances for stored ones, so identity tells them apart.
+     */
+    private static boolean isUnannotated(final TypeAnnotation annotation) {
+        return annotation == TypeAnnotation.UNTYPED || annotation == TypeAnnotation.ANY_TYPE
+                || annotation == TypeAnnotation.UNTYPED_ATOMIC;
     }
 
     /**
@@ -125,13 +178,7 @@ public final class TypeAnnotations {
      */
     public static boolean matches(@Nullable final XQueryContext ctx, final Node node, final int typeCode,
             final boolean nillable) throws XPathException {
-        if (node instanceof NodeValue nodeValue) {
-            return matches(ctx, nodeValue, typeCode, nillable);
-        }
-        if (node instanceof NodeHandle stored) {
-            return matches(ctx, new NodeProxy(stored), typeCode, nillable);
-        }
-        return matches(annotationOf(ctx, node), typeCode, nillable);
+        return matches(ctx, node, typeCode, nillable, false);
     }
 
     /**

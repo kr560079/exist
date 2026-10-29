@@ -23,9 +23,13 @@ package org.exist.xquery;
 
 import org.exist.dom.QName;
 import org.exist.dom.persistent.NodeProxy;
+import org.exist.dom.memtree.NodeImpl;
+import org.exist.dom.memtree.ReferenceNode;
+import org.exist.stax.EmbeddedXMLStreamReader;
 import org.exist.xquery.schema.AnnotationLookupException;
 import org.exist.xquery.schema.TypeAnnotations;
 import org.exist.xquery.value.Type;
+import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 
 import javax.annotation.Nullable;
@@ -33,7 +37,9 @@ import javax.xml.stream.XMLStreamReader;
 
 /**
  * Tests the kind, optionally the name, and the type annotation of an element or attribute:
- * {@code element(N, T)}, {@code element(*, T)}, {@code attribute(N, T)} and {@code attribute(*, T)}.
+ * {@code element(N, T)}, {@code element(*, T)}, {@code attribute(N, T)} and {@code attribute(*, T)}, with
+ * {@code T?} for nillable element tests. With the kind {@link Type#DOCUMENT} it tests the document element of
+ * a document node: {@code document-node(element(N, T))}.
  *
  * <p>The test is always reported as a wildcard test without a name, so that a location step
  * evaluates it node by node instead of looking the name up in the structural index, which
@@ -41,15 +47,15 @@ import javax.xml.stream.XMLStreamReader;
  */
 public class TypedNodeTest extends TypeTest {
 
-    private final XQueryContext context;
+    protected final XQueryContext context;
     @Nullable private final NameTest nameTest;
-    private final int typeCode;
-    private final boolean nillable;
+    protected final int typeCode;
+    protected final boolean nillable;
 
     /**
      * @param context  the context of the query
-     * @param nodeKind {@link Type#ELEMENT} or {@link Type#ATTRIBUTE}
-     * @param name     the name of the node, or null for any name
+     * @param nodeKind {@link Type#ELEMENT}, {@link Type#ATTRIBUTE} or {@link Type#DOCUMENT}
+     * @param name     the name of the node (of the document element for a document node), or null for any name
      * @param typeCode the {@link Type} code the type annotation of the node must be a subtype of
      * @param nillable true if a nilled node may match
      * @throws XPathException if the name is not valid
@@ -63,24 +69,54 @@ public class TypedNodeTest extends TypeTest {
         this.nillable = nillable;
     }
 
+    /**
+     * Test the name of a node of the right kind.
+     *
+     * @param node an element, attribute or document node
+     * @return true if the name matches
+     */
+    protected boolean matchesName(final Node node) {
+        return nameTest == null || nameTest.matchesName(node);
+    }
+
+    /**
+     * Test the name of the current node of a stream, of the right kind.
+     *
+     * @param reader the stream
+     * @return true if the name matches
+     */
+    protected boolean matchesName(final XMLStreamReader reader) {
+        return nameTest == null || nameTest.matches(reader);
+    }
+
+    /**
+     * @param name a node name
+     * @return true if this test can only match nodes of that name
+     */
     @Override
-    public boolean matches(final NodeProxy proxy) {
-        if (nameTest != null && !nameTest.matches(proxy)) {
-            return false;
-        }
-        if (nameTest == null && !super.matches(proxy)) {
-            return false;
-        }
-        return hasType(proxy);
+    public boolean matches(final QName name) {
+        return nameTest != null && nameTest.matches(name);
+    }
+
+    /** @return true if a node without a stored type annotation never matches (schema-element, schema-attribute) */
+    protected boolean requiresAnnotation() {
+        return false;
     }
 
     @Override
-    public boolean matches(final Node other) {
-        if (nameTest != null ? !nameTest.matches(other) : !super.matches(other)) {
+    public boolean matches(final NodeProxy proxy) {
+        if (!super.matches(proxy)) {
             return false;
         }
+        final Node node = proxy.getNode();
+        if (node == null || !matchesName(node)) {
+            return false;
+        }
+        if (nodeType == Type.DOCUMENT) {
+            return hasType(((Document) node).getDocumentElement());
+        }
         try {
-            return TypeAnnotations.matches(context, other, typeCode, nillable);
+            return TypeAnnotations.matches(context, proxy, typeCode, nillable, requiresAnnotation());
         } catch (final XPathException e) {
             // NodeTest#matches cannot throw it: LocationStep unwraps it
             throw new AnnotationLookupException(e);
@@ -88,17 +124,31 @@ public class TypedNodeTest extends TypeTest {
     }
 
     @Override
-    public boolean matches(final XMLStreamReader reader) {
-        if (nameTest != null ? !nameTest.matches(reader) : !super.matches(reader)) {
+    public boolean matches(final Node other) {
+        if (other == null) {
             return false;
         }
-        // no annotation is stored in a stream: the node is unannotated
-        return Type.subTypeOf(nodeType == Type.ELEMENT ? Type.UNTYPED : Type.UNTYPED_ATOMIC, typeCode);
+        if (other.getNodeType() == NodeImpl.REFERENCE_NODE) {
+            return matches(((ReferenceNode) other).getReference());
+        }
+        if (!super.matches(other) || !matchesName(other)) {
+            return false;
+        }
+        return hasType(nodeType == Type.DOCUMENT ? ((Document) other).getDocumentElement() : other);
     }
 
     @Override
-    public boolean matches(final QName name) {
-        return nameTest != null && nameTest.matches(name);
+    public boolean matches(final XMLStreamReader reader) {
+        if (!super.matches(reader) || !matchesName(reader)) {
+            return false;
+        }
+        if (reader instanceof EmbeddedXMLStreamReader stored) {
+            // a stream over stored nodes, e.g. of a child step: test the stored node
+            return hasType(stored.getNode());
+        }
+        // no annotation is stored in any other stream: the node is unannotated
+        return !requiresAnnotation()
+                && Type.subTypeOf(nodeType == Type.ATTRIBUTE ? Type.UNTYPED_ATOMIC : Type.UNTYPED, typeCode);
     }
 
     @Override
@@ -111,9 +161,17 @@ public class TypedNodeTest extends TypeTest {
         return true;
     }
 
-    private boolean hasType(final NodeProxy proxy) {
+    /** test the type annotation of an element or attribute (the document element of a document node) */
+    private boolean hasType(@Nullable final Node node) {
+        if (node == null) {
+            return false;
+        }
+        if (typeCode == Type.ANY_TYPE && nillable && !requiresAnnotation()) {
+            // element(N, xs:anyType?), e.g. of document-node(element(N)): every element matches
+            return true;
+        }
         try {
-            return TypeAnnotations.matches(context, proxy, typeCode, nillable);
+            return TypeAnnotations.matches(context, node, typeCode, nillable, requiresAnnotation());
         } catch (final XPathException e) {
             // NodeTest#matches cannot throw it: LocationStep unwraps it
             throw new AnnotationLookupException(e);
@@ -122,7 +180,9 @@ public class TypedNodeTest extends TypeTest {
 
     @Override
     public String toString() {
-        return Type.getTypeName(nodeType) + "(" + (nameTest == null ? "*" : nameTest.getName().getStringValue())
+        final String test = Type.getTypeName(nodeType == Type.DOCUMENT ? Type.ELEMENT : nodeType) + "("
+                + (nameTest == null ? "*" : nameTest.getName().getStringValue())
                 + ", " + Type.getTypeName(typeCode) + (nillable ? "?" : "") + ")";
+        return nodeType == Type.DOCUMENT ? "document-node(" + test + ")" : test;
     }
 }
