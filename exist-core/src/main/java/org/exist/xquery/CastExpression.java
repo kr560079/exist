@@ -23,6 +23,7 @@ package org.exist.xquery;
 
 import org.exist.dom.QName;
 import org.exist.dom.persistent.DocumentSet;
+import org.exist.xquery.schema.UserTypeCasts;
 import org.exist.xquery.util.ExpressionDumper;
 import org.exist.xquery.value.*;
 
@@ -106,7 +107,9 @@ public class CastExpression extends AbstractExpression {
 
         final Sequence result;
         final Sequence seq = Atomize.atomize(expression.eval(contextSequence, contextItem));
-        if (seq.isEmpty()) {
+        if (UserTypeRegistry.isUserType(requiredType)) {
+            result = castToUserType(seq);
+        } else if (seq.isEmpty()) {
             if (cardinality.atLeastOne()) {
                 throw new XPathException(this, ErrorCodes.XPTY0004, "Type error: empty sequence is not allowed here");
             } else {
@@ -115,7 +118,8 @@ public class CastExpression extends AbstractExpression {
         } else if (seq.hasMany() && Type.subTypeOf(requiredType, Type.ANY_ATOMIC_TYPE)) {
             throw new XPathException(this, ErrorCodes.XPTY0004, "cardinality error: sequence with more than one item is not allowed here");
         } else {
-            final Item item = seq.itemAt(0);
+            final Item item = UserTypeRegistry.hasUserTypes() && seq.itemAt(0) instanceof AtomicValue atomic
+                    ? atomic.unwrapUserType() : seq.itemAt(0);
 
             // Casting to QName needs special treatment.
             // Per XPath F&O 3.1 §19.4.5: casting from xs:untypedAtomic to
@@ -157,6 +161,19 @@ public class CastExpression extends AbstractExpression {
         return result;
     }
 
+    private Sequence castToUserType(final Sequence seq) throws XPathException {
+        if (seq.isEmpty()) {
+            if (cardinality.atLeastOne()) {
+                throw new XPathException(this, ErrorCodes.XPTY0004, "Type error: empty sequence is not allowed here");
+            }
+            return Sequence.EMPTY_SEQUENCE;
+        }
+        if (seq.hasMany()) {
+            throw new XPathException(this, ErrorCodes.XPTY0004, "cardinality error: sequence with more than one item is not allowed here");
+        }
+        return UserTypeCasts.cast((AtomicValue) seq.itemAt(0), requiredType, this);
+    }
+
     @Override
     public void dump(final ExpressionDumper dumper) {
         expression.dump(dumper);
@@ -181,7 +198,8 @@ public class CastExpression extends AbstractExpression {
 
     @Override
     public Cardinality getCardinality() {
-        return Cardinality.ZERO_OR_ONE;
+        final UserDefinedType userType = UserTypeRegistry.get(requiredType);
+        return userType != null && userType.variety() == Variety.LIST ? Cardinality.ZERO_OR_MORE : Cardinality.ZERO_OR_ONE;
     }
 
     @Override

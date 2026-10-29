@@ -27,6 +27,9 @@ import org.exist.xquery.value.BooleanValue;
 import org.exist.xquery.value.Item;
 import org.exist.xquery.value.Sequence;
 import org.exist.xquery.value.Type;
+import org.exist.xquery.value.AtomicValue;
+import org.exist.xquery.value.UserTypeRegistry;
+import org.exist.xquery.schema.UserTypeCasts;
 
 /**
  * Implements the "castable as" XQuery expression.
@@ -129,6 +132,14 @@ public class CastableExpression extends AbstractExpression {
 			}
 	        else {
 	    		try {
+	    			if (UserTypeRegistry.isUserType(requiredType)) {
+	    				if (seq.hasMany()) {
+	    					result = BooleanValue.FALSE;
+	    				} else {
+	    					UserTypeCasts.cast((AtomicValue) seq.itemAt(0), requiredType, this);
+	    					result = BooleanValue.TRUE;
+	    				}
+	    			} else
 	    			// Per XPath F&O 3.1: if the cast is impossible per the casting table,
 	    			// castable as returns false without attempting the conversion.
 	    			if (!Type.isCastable(seq.itemAt(0).getType(), requiredType)) {

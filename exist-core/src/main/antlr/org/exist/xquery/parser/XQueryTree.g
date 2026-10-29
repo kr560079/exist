@@ -4324,6 +4324,8 @@ throws PermissionDeniedException, EXistException, XPathException
             try {
                 QName qn= QName.parse(staticContext, t.getText());
                 int code= staticContext.getInScopeSchemas().resolveTypeCode(qn);
+                if (!org.exist.xquery.schema.UserTypeCasts.isSimpleTarget(code))
+                    throw new XPathException(t.getLine(), t.getColumn(), ErrorCodes.XQST0052, qn.toString() + " is not a simple type");
                 CastExpression castExpr= new CastExpression(context, expr, code, cardinality);
                 castExpr.setASTNode(castAST);
                 path.add(castExpr);
@@ -4355,6 +4357,8 @@ throws PermissionDeniedException, EXistException, XPathException
             try {
                 QName qn= QName.parse(staticContext, t2.getText());
                 int code= staticContext.getInScopeSchemas().resolveTypeCode(qn);
+                if (!org.exist.xquery.schema.UserTypeCasts.isSimpleTarget(code))
+                    throw new XPathException(t2.getLine(), t2.getColumn(), ErrorCodes.XQST0052, qn.toString() + " is not a simple type");
                 CastableExpression castExpr= new CastableExpression(context, expr, code, cardinality);
                 castExpr.setASTNode(castAST);
                 path.add(castExpr);

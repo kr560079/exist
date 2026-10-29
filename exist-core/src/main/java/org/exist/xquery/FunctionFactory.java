@@ -210,6 +210,15 @@ public class FunctionFactory {
             return castExpression(context, ast, params, qname);
         }
 
+        //A simple type of an imported schema has a constructor function too
+        if (params.size() == 1 && !context.getInScopeSchemas().isEmpty()
+                && context.getInScopeSchemas().schemaFor(uri).isPresent()) {
+            final CastExpression constructor = schemaConstructor(context, ast, params.getFirst(), qname);
+            if (constructor != null) {
+                return constructor;
+            }
+        }
+
         //Check if the namespace URI starts with "java:". If yes, treat
         //the function call as a call to an arbitrary Java function.
         if (uri.startsWith("java:")) {
@@ -264,6 +273,24 @@ public class FunctionFactory {
         }
 
         return op;
+    }
+
+    /** @return the constructor function of a simple type of an imported schema, or null if the schema has no such type */
+    private static @Nullable CastExpression schemaConstructor(final XQueryContext context, final XQueryAST ast,
+            final Expression arg, final QName qname) throws XPathException {
+        final int code;
+        try {
+            code = context.getInScopeSchemas().resolveTypeCode(qname);
+        } catch (final XPathException e) {
+            return null;
+        }
+        if (!org.exist.xquery.value.UserTypeRegistry.isUserType(code)
+                || !org.exist.xquery.schema.UserTypeCasts.isSimpleTarget(code)) {
+            return null;
+        }
+        final CastExpression castExpr = new CastExpression(context, arg, code, Cardinality.ZERO_OR_ONE);
+        castExpr.setASTNode(ast);
+        return castExpr;
     }
 
     private static CastExpression castExpression(
