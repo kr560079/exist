@@ -57,7 +57,7 @@ public class CastExpression extends AbstractExpression {
         setExpression(expr);
     }
 
-    protected Expression getInnerExpression() {
+    public Expression getInnerExpression() {
         return expression;
     }
 

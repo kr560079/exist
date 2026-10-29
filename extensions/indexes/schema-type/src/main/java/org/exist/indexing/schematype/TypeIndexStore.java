@@ -64,8 +64,8 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <tr><td>{@code 0x01}</td><td>docId</td><td>{@link DocMeta}</td></tr>
  *   <tr><td>{@code 0x02}</td><td>docId, nodeId</td><td>localTypeId (short), flags (bit 0 = nilled)</td></tr>
  *   <tr><td>{@code 0x03}</td><td>localTypeId, docId</td><td>node list</td></tr>
- *   <tr><td>{@code 0x04}</td><td>localTypeId, {@link org.exist.storage.Indexable#serializeValue} key, docId</td><td>node list</td></tr>
- *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, value key</td><td>placeholder: the {@code 0x04} keys of a document,
+ *   <tr><td>{@code 0x04}</td><td>collectionId, localTypeId, {@link TypedKeys typed key}, docId</td><td>node list</td></tr>
+ *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, typed key</td><td>collectionId: the {@code 0x04} keys of a document,
  *       so that removing a document does not scan the typed values of all documents</td></tr>
  *   <tr><td>{@code 0x06}</td><td>docId, localTypeId</td><td>placeholder: the {@code 0x03} keys of a document, so that
  *       they are removed independently of the local type table of the document's current collection</td></tr>
@@ -75,6 +75,13 @@ import java.util.concurrent.locks.ReentrantLock;
  * A node list is a sequence of appended chunks, each an int count followed by that many entries of a node
  * kind byte ({@link org.w3c.dom.Node#ELEMENT_NODE} or {@link org.w3c.dom.Node#ATTRIBUTE_NODE}) and a node id
  * written with prefix compression against the previous entry of the chunk.</p>
+ *
+ * <p>The typed keys of {@code 0x04} preserve the order of the values ({@link TypedKeys}), so that a comparison is a
+ * range scan; local type ids are per collection, so the collection id comes first and a scan only reads the entries
+ * of one collection. This layout (format 2, introduced with the typed-value comparisons) replaced one keyed by
+ * {@code localTypeId} and {@link org.exist.storage.Indexable#serializeValue}, whose decimal keys did not sort
+ * numerically: an index written before it must be rebuilt ({@code xmldb:reindex} of the collection); the index is
+ * derived data and can always be rebuilt.</p>
  *
  * <p>Every method takes the file's lock. Every write for a document advances that document's generation, which
  * readers use to invalidate cached annotations.</p>
@@ -209,21 +216,21 @@ final class TypeIndexStore {
         }
     }
 
-    void putTypedValue(final short localTypeId, final byte[] key, final int docId, final NodeId id, final short nodeKind)
-            throws IOException {
-        putTypedValues(localTypeId, key, docId, List.of(new Member(id, nodeKind)));
-    }
-
     /**
      * Append nodes, in document order, to the node list of a typed value of a document.
+     *
+     * @param collectionId the id of the document's collection, whose local type table {@code localTypeId} is from
+     * @param key          the typed key ({@link TypedKeys}), or {@code {UNINDEXABLE}}
      */
-    void putTypedValues(final short localTypeId, final byte[] key, final int docId, final List<Member> members)
-            throws IOException {
+    void putTypedValues(final int collectionId, final short localTypeId, final byte[] key, final int docId,
+            final List<Member> members) throws IOException {
         if (members.isEmpty()) {
             return;
         }
-        append(typedKey(localTypeId, key, docId), encode(members));
-        put(docTypedKey(docId, localTypeId, key), EMPTY);
+        append(typedKey(collectionId, localTypeId, key, docId), encode(members));
+        final byte[] value = new byte[4];
+        ByteConversion.intToByteH(collectionId, value, 0);
+        put(docTypedKey(docId, localTypeId, key), value);
         touched(docId);
     }
 
@@ -271,40 +278,53 @@ final class TypeIndexStore {
     private static final int POINT_LOOKUP_DOCS = 16;
 
     /**
-     * @return the nodes of the given documents annotated with one of the local types whose typed value key lies in
-     *         the range; keys compare as unsigned bytes, so the range is only meaningful for value encodings which
-     *         preserve the order of the values
+     * The nodes of the given documents whose typed value has a key in a range.
+     *
+     * @param collectionId the collection of the documents, whose local type table the type ids are from
+     * @param docs         documents of that collection
+     * @param localTypeIds the local types
+     * @param low          the scan starts at the first key starting with or greater than this (inclusive); a typed
+     *                     key or a prefix of one ({@link TypedKeys}), never null
+     * @param high         the scan ends after the last key starting with this (inclusive), a typed key or a prefix
+     * @return the nodes, in document order, without duplicates
      */
-    NodeSet typedRange(final DocumentSet docs, final short[] localTypeIds, @Nullable final byte[] low, final boolean lowIncl,
-            @Nullable final byte[] high, final boolean highIncl) throws IOException {
+    NodeSet typedRange(final int collectionId, final DocumentSet docs, final short[] localTypeIds, final byte[] low,
+            final byte[] high) throws IOException {
         final NodeSet result = new NewArrayNodeSet();
+        if (docs.getDocumentCount() == 0 || Arrays.compareUnsigned(low, high) > 0 && !startsWith(low, high)) {
+            return result;
+        }
         for (final short localTypeId : localTypeIds) {
-            final byte[] prefix = new byte[3];
-            prefix[0] = TYPED_VALUES;
-            ByteConversion.shortToByteH(localTypeId, prefix, 1);
-            final byte[] start = low == null ? prefix : concat(prefix, low);
-            for (final byte[] key : keys(start, prefix)) {
+            final byte[] prefix = typedPrefix(collectionId, localTypeId);
+            final byte[] upper = successor(concat(prefix, high));
+            for (final byte[] key : keysBetween(concat(prefix, low), upper, prefix)) {
                 final DocumentImpl doc = docs.getDoc(ByteConversion.byteToIntH(key, key.length - 4));
-                if (doc == null) {
-                    continue;
+                if (doc != null) {
+                    addAll(result, doc, get(key));
                 }
-                final byte[] valueKey = Arrays.copyOfRange(key, 3, key.length - 4);
-                if (low != null) {
-                    final int c = Arrays.compareUnsigned(valueKey, low);
-                    if (c < 0 || (c == 0 && !lowIncl)) {
-                        continue;
-                    }
-                }
-                if (high != null) {
-                    final int c = Arrays.compareUnsigned(valueKey, high);
-                    if (c > 0 || (c == 0 && !highIncl)) {
-                        continue;
-                    }
-                }
-                addAll(result, doc, get(key));
             }
         }
         return result;
+    }
+
+    /**
+     * @return true if a node of one of the documents of one of the local types has a typed value without key
+     *         ({@link TypedKeys#UNINDEXABLE})
+     */
+    boolean hasUnindexable(final int collectionId, final DocumentSet docs, final short[] localTypeIds) throws IOException {
+        for (final short localTypeId : localTypeIds) {
+            final byte[] prefix = concat(typedPrefix(collectionId, localTypeId), new byte[] {TypedKeys.UNINDEXABLE});
+            for (final byte[] key : keys(prefix, prefix)) {
+                if (key.length == prefix.length + 4 && docs.getDoc(ByteConversion.byteToIntH(key, prefix.length)) != null) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean startsWith(final byte[] key, final byte[] prefix) {
+        return key.length >= prefix.length && Arrays.equals(key, 0, prefix.length, prefix, 0, prefix.length);
     }
 
     // --- removal ---
@@ -334,7 +354,11 @@ final class TypeIndexStore {
         final byte[] typed = intKey(DOC_TYPED_KEYS, docId);
         for (final byte[] key : keys(typed, typed)) {
             final short localTypeId = ByteConversion.byteToShortH(key, 5);
-            remove(typedKey(localTypeId, Arrays.copyOfRange(key, 7, key.length), docId));
+            final byte[] collectionId = get(key);
+            if (collectionId != null && collectionId.length == 4) {
+                remove(typedKey(ByteConversion.byteToIntH(collectionId, 0), localTypeId,
+                        Arrays.copyOfRange(key, 7, key.length), docId));
+            }
             remove(key);
         }
         touched(docId);
@@ -367,8 +391,13 @@ final class TypeIndexStore {
         final byte[] typed = intKey(DOC_TYPED_KEYS, docId);
         for (final byte[] key : keys(typed, typed)) {
             final short localTypeId = ByteConversion.byteToShortH(key, 5);
-            if (affected.contains(localTypeId)
-                    && filter(typedKey(localTypeId, Arrays.copyOfRange(key, 7, key.length), docId), subtreeRoot)) {
+            if (!affected.contains(localTypeId)) {
+                continue;
+            }
+            final byte[] collectionId = get(key);
+            if (collectionId == null || collectionId.length != 4
+                    || filter(typedKey(ByteConversion.byteToIntH(collectionId, 0), localTypeId,
+                            Arrays.copyOfRange(key, 7, key.length), docId), subtreeRoot)) {
                 remove(key);
             }
         }
@@ -467,12 +496,19 @@ final class TypeIndexStore {
         return key;
     }
 
-    private static byte[] typedKey(final short localTypeId, final byte[] valueKey, final int docId) {
-        final byte[] key = new byte[3 + valueKey.length + 4];
+    private static byte[] typedPrefix(final int collectionId, final short localTypeId) {
+        final byte[] key = new byte[7];
         key[0] = TYPED_VALUES;
-        ByteConversion.shortToByteH(localTypeId, key, 1);
-        System.arraycopy(valueKey, 0, key, 3, valueKey.length);
-        ByteConversion.intToByteH(docId, key, 3 + valueKey.length);
+        ByteConversion.intToByteH(collectionId, key, 1);
+        ByteConversion.shortToByteH(localTypeId, key, 5);
+        return key;
+    }
+
+    private static byte[] typedKey(final int collectionId, final short localTypeId, final byte[] valueKey, final int docId) {
+        final byte[] key = new byte[7 + valueKey.length + 4];
+        System.arraycopy(typedPrefix(collectionId, localTypeId), 0, key, 0, 7);
+        System.arraycopy(valueKey, 0, key, 7, valueKey.length);
+        ByteConversion.intToByteH(docId, key, 7 + valueKey.length);
         return key;
     }
 

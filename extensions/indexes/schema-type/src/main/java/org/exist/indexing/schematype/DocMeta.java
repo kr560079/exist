@@ -26,6 +26,7 @@ import org.exist.storage.io.VariableByteInput;
 import org.exist.storage.io.VariableByteOutputStream;
 import org.exist.xquery.schema.SchemaKey;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,8 +38,12 @@ import java.util.List;
  * @param status            whether every node could be typed
  * @param unassignablePaths the paths of the roots of unassignable subtrees, at most {@link #MAX_PATHS}; for
  *                          diagnostics only (paths are not unique)
+ * @param typedValues       the {@linkplain SchemaTypeConfig#typedValuesFingerprint() typed-value types} the document's
+ *                          typed values were written for, or null if unknown (written before they were recorded):
+ *                          the typed-value table answers for the document only while they are the collection's
  */
-public record DocMeta(SchemaKey indexedWith, DocStatus status, List<String> unassignablePaths) {
+public record DocMeta(SchemaKey indexedWith, DocStatus status, List<String> unassignablePaths,
+        @Nullable String typedValues) {
 
     /** the maximum number of unassignable paths recorded per document */
     public static final int MAX_PATHS = 100;
@@ -64,6 +69,9 @@ public record DocMeta(SchemaKey indexedWith, DocStatus status, List<String> unas
             for (final String path : unassignablePaths) {
                 os.writeUTF(path);
             }
+            if (typedValues != null) {
+                os.writeUTF(typedValues);
+            }
         } catch (final IOException e) {
             throw new IllegalStateException(e);
         }
@@ -79,6 +87,7 @@ public record DocMeta(SchemaKey indexedWith, DocStatus status, List<String> unas
         for (int i = 0; i < count; i++) {
             paths.add(is.readUTF());
         }
-        return new DocMeta(key, status, paths);
+        final String typedValues = is.available() > 0 ? is.readUTF() : null;
+        return new DocMeta(key, status, paths, typedValues);
     }
 }

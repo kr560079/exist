@@ -75,7 +75,7 @@ public class SchemaTypeIndexTest {
     private static final String XCONF = "<collection xmlns='" + CC + "'><index xmlns:t='" + T_NS
             + "' xmlns:xs='http://www.w3.org/2001/XMLSchema'>"
             + "<schema-type href='xmldb:exist:///db/st-schema/trade.xsd'/>"
-            + "<typed-values><type name='t:NonNegativeDecimal'/><type name='xs:decimal'/></typed-values>"
+            + "<typed-values><type name='t:NonNegativeDecimal'/><type name='xs:decimal'/><type name='xs:ID'/></typed-values>"
             + "</index></collection>";
 
     private static final String T1 = "<t:trade xmlns:t='" + T_NS + "'>"
@@ -162,7 +162,7 @@ public class SchemaTypeIndexTest {
         final DefaultDocumentSet docs = new DefaultDocumentSet();
         docs.add(t1);
         assertEquals(0, index().store().nodesOfType(docs, new short[] {local}).getLength());
-        assertEquals(0, index().store().typedRange(docs, new short[] {local}, null, true, null, true).getLength());
+        assertEquals(0, allTypedValues(docs, local).getLength());
     }
 
     @Test
@@ -246,7 +246,7 @@ public class SchemaTypeIndexTest {
         // not listed: annotated, but no typed value entries
         final short currency = localTypeId(code("CurrencyCode"));
         assertEquals(1, nodesOfType("t1.xml", code("CurrencyCode"), false).getLength());
-        assertEquals(0, index().store().typedRange(docs("t1.xml"), new short[] {currency}, null, true, null, true).getLength());
+        assertEquals(0, allTypedValues(docs("t1.xml"), currency).getLength());
     }
 
     @Test
@@ -362,6 +362,34 @@ public class SchemaTypeIndexTest {
         ((ElementImpl) node("/db/st/trades.xml", party).getNode()).setAttribute("id", "party8");
         assertEquals(Type.ID, annotationIn("/db/st/trades.xml", party + "/@id").typeCode());
         assertEquals(1, provider().nodesOfType(docs("trades.xml"), Type.ID, false, Type.ATTRIBUTE).getLength());
+    }
+
+    @Test
+    void setAttributeUpdatesTypedValue() throws Exception {
+        // R26: the DOM API reindexes an existing attribute in STORE mode; its typed value entry follows the new value
+        final String party = "/t:trades/t:trade[1]/t:party";
+        assertEquals(1, typedValues("trades.xml", Type.ID, "party1").getLength());
+        ((ElementImpl) node("/db/st/trades.xml", party).getNode()).setAttribute("id", "party8");
+        assertEquals(0, typedValues("trades.xml", Type.ID, "party1").getLength());
+        assertEquals(1, typedValues("trades.xml", Type.ID, "party8").getLength());
+        assertEquals(Type.ID, annotationIn("/db/st/trades.xml", party + "/@id").typeCode());
+    }
+
+    @Test
+    void typedValuesFollowXQueryUpdates() throws Exception {
+        assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "100").getLength());
+        query("update value doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with '250'");
+        assertEquals(0, typedValues("t1.xml", code("NonNegativeDecimal"), "100").getLength());
+        assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "250").getLength());
+        query("update value doc('/db/st/trades.xml')/t:trades/t:trade[1]/t:party/@id with 'party9'");
+        assertEquals(0, typedValues("trades.xml", Type.ID, "party1").getLength());
+        assertEquals(1, typedValues("trades.xml", Type.ID, "party9").getLength());
+    }
+
+    @Test
+    void docMetaRecordsTypedValueTypes() throws Exception {
+        assertEquals(config().typedValuesFingerprint(), docMeta("t1.xml").typedValues());
+        assertTrue(docMeta("t1.xml").typedValues().contains("{urn:example:trade}NonNegativeDecimal"));
     }
 
     @Test
@@ -511,8 +539,13 @@ public class SchemaTypeIndexTest {
     }
 
     private NodeSet typedValues(final String name, final int code, final String lexical) throws Exception {
-        final byte[] key = ((org.exist.storage.Indexable) TypedValues.fromLexical(lexical, code, null).itemAt(0)).serializeValue(0);
-        return index().store().typedRange(docs(name), new short[] {localTypeId(code)}, key, true, key, true);
+        final byte[] key = TypedKeys.encode((org.exist.xquery.value.AtomicValue) TypedValues.fromLexical(lexical, code, null).itemAt(0));
+        return index().store().typedRange(broker.getCollection(ST).getId(), docs(name), new short[] {localTypeId(code)}, key, key);
+    }
+
+    /** every typed value entry of a type in the documents */
+    private NodeSet allTypedValues(final DefaultDocumentSet docs, final short localTypeId) throws Exception {
+        return index().store().typedRange(broker.getCollection(ST).getId(), docs, new short[] {localTypeId}, new byte[0], new byte[0]);
     }
 
     private DefaultDocumentSet docs(final String... names) {

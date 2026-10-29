@@ -24,7 +24,6 @@ package org.exist.indexing.schematype;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.xerces.xs.XSTypeDefinition;
-import org.exist.EXistException;
 import org.exist.collections.Collection;
 import org.exist.collections.CollectionConfigurationManager;
 import org.exist.dom.QName;
@@ -45,7 +44,6 @@ import org.exist.security.PermissionDeniedException;
 import org.exist.security.Subject;
 import org.exist.storage.DBBroker;
 import org.exist.storage.IndexSpec;
-import org.exist.storage.Indexable;
 import org.exist.storage.NodePath;
 import org.exist.storage.txn.Txn;
 import org.exist.util.DatabaseConfigurationException;
@@ -63,6 +61,7 @@ import org.exist.xquery.schema.TypeAnnotation;
 import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.xquery.schema.TypeAnnotationProvider.StoreCheck;
 import org.exist.xquery.schema.TypedValues;
+import org.exist.xquery.value.AtomicValue;
 import org.exist.xquery.value.Item;
 import org.exist.xquery.value.Sequence;
 import org.exist.xquery.value.SequenceIterator;
@@ -465,11 +464,17 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             store.putAnnotation(docId, a.nodeId(), localTypeId, a.nilled());
             final Member member = new Member(a.nodeId(), (short) a.nodeKind());
             members.computeIfAbsent(localTypeId, k -> new ArrayList<>()).add(member);
-            if (p.lexical() != null && !a.nilled()) {
+            if (!a.nilled()) {
                 final QName typeName = LocalTypeTable.typeNameOf(a.typeCode());
                 if (typeName != null && cfg.typedValueTypes().contains(typeName)) {
-                    for (final byte[] key : valueKeys(p.lexical(), a.typeCode())) {
-                        typedValues.computeIfAbsent(new TypedKey(localTypeId, key), k -> new ArrayList<>()).add(member);
+                    // a nilled node's typed value is empty: no entry; a value which was not collected cannot be found
+                    final List<byte[]> keys = p.lexical() == null ? UNINDEXABLE : valueKeys(p.lexical(), a.typeCode());
+                    for (final byte[] key : keys) {
+                        final List<Member> list = typedValues.computeIfAbsent(new TypedKey(localTypeId, key), k -> new ArrayList<>());
+                        // a list value may repeat an item
+                        if (list.isEmpty() || list.getLast() != member) {
+                            list.add(member);
+                        }
                     }
                 }
             }
@@ -478,7 +483,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             store.addTypeMembers(entry.getKey(), docId, entry.getValue());
         }
         for (final Map.Entry<TypedKey, List<Member>> entry : typedValues.entrySet()) {
-            store.putTypedValues(entry.getKey().localTypeId(), entry.getKey().key(), docId, entry.getValue());
+            store.putTypedValues(collectionId, entry.getKey().localTypeId(), entry.getKey().key(), docId, entry.getValue());
         }
         listener.recordUnassignable(unassignable);
 
@@ -487,7 +492,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final int count = listener.unassignableCount();
             if (full) {
                 store.putDocMeta(docId, new DocMeta(cfg.schema().key(),
-                        count > 0 ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths));
+                        count > 0 ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths, cfg.typedValuesFingerprint()));
             } else if (listener.rootPath() != null) {
                 updateDocMeta(docId, listener.rootPath(), paths, count);
             }
@@ -519,7 +524,8 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
         paths.addAll(newPaths);
         final boolean partial = saturated || newCount > newPaths.size() || !paths.isEmpty();
-        final DocMeta updated = new DocMeta(meta.indexedWith(), partial ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths);
+        final DocMeta updated = new DocMeta(meta.indexedWith(), partial ? DocMeta.DocStatus.PARTIAL : DocMeta.DocStatus.TYPED, paths,
+                meta.typedValues());
         if (!updated.equals(meta)) {
             index.store().putDocMeta(docId, updated);
         }
@@ -537,8 +543,12 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
     }
 
+    /** the key list of a node whose typed value has no key: see {@link TypedKeys#UNINDEXABLE} */
+    private static final List<byte[]> UNINDEXABLE = List.of(new byte[] {TypedKeys.UNINDEXABLE});
+
     /**
-     * @return the index keys of the typed value of a node, empty if it cannot be built
+     * @return the typed keys ({@link TypedKeys}) of the items of the typed value of a node (none for an empty
+     *         list), or {@link #UNINDEXABLE} if the value cannot be built or an item has no key
      */
     private static List<byte[]> valueKeys(final String lexical, final int typeCode) {
         final List<byte[]> keys = new ArrayList<>(1);
@@ -546,16 +556,16 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final Sequence value = TypedValues.fromLexical(lexical, typeCode, null);
             for (final SequenceIterator i = value.iterate(); i.hasNext(); ) {
                 final Item item = i.nextItem();
-                if (item instanceof Indexable indexable) {
-                    try {
-                        keys.add(indexable.serializeValue(0));
-                    } catch (final EXistException e) {
-                        // a type without an index encoding
-                    }
+                final byte[] key = item instanceof AtomicValue atomic ? TypedKeys.encode(atomic) : null;
+                if (key == null) {
+                    // e.g. a value of a type without encoding, or too large
+                    return UNINDEXABLE;
                 }
+                keys.add(key);
             }
         } catch (final XPathException e) {
-            // an invalid value (check-values="false"): no typed value entry
+            // an invalid value (check-values="false"): comparisons raise an error the index cannot
+            return UNINDEXABLE;
         }
         return keys;
     }
@@ -807,6 +817,80 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             }
         }
         return result;
+    }
+
+    /**
+     * The documents of one collection, with the collection's configuration and local type table.
+     */
+    record TypedScope(Collection collection, DefaultDocumentSet docs, SchemaTypeConfig config, LocalTypeTable table) {
+    }
+
+    /**
+     * The scopes of a lookup in the typed-value table, one per collection of the documents; null if the table cannot
+     * answer for every document: a document in a collection without schema or typed values, a document the schema
+     * type index cannot answer for ({@code EXSA0002}, {@code EXSA0003}), or one whose typed values were written for
+     * other typed-value types than the collection's current ones.
+     *
+     * @throws XPathException if the index cannot be read
+     */
+    @Nullable List<TypedScope> typedScopes(final DocumentSet docs) throws XPathException {
+        final Map<Integer, DefaultDocumentSet> docsByCollection = new LinkedHashMap<>();
+        final Map<Integer, Collection> collections = new HashMap<>();
+        for (final Iterator<DocumentImpl> i = docs.getDocumentIterator(); i.hasNext(); ) {
+            final DocumentImpl doc = i.next();
+            final Collection collection = doc.getCollection();
+            if (collection == null) {
+                return null;
+            }
+            collections.putIfAbsent(collection.getId(), collection);
+            docsByCollection.computeIfAbsent(collection.getId(), k -> new DefaultDocumentSet()).add(doc);
+        }
+        final List<TypedScope> scopes = new ArrayList<>(docsByCollection.size());
+        try {
+            for (final Map.Entry<Integer, DefaultDocumentSet> entry : docsByCollection.entrySet()) {
+                final Collection collection = collections.get(entry.getKey());
+                final SchemaTypeConfig cfg = configOf(collection);
+                if (cfg == null || cfg.typedValueTypes().isEmpty()) {
+                    return null;
+                }
+                final String fingerprint = cfg.typedValuesFingerprint();
+                for (final Iterator<DocumentImpl> i = entry.getValue().getDocumentIterator(); i.hasNext(); ) {
+                    final DocumentImpl doc = i.next();
+                    try {
+                        ensureUsable(doc, cfg);
+                    } catch (final XPathException e) {
+                        return null;
+                    }
+                    final DocMeta meta = docMeta(doc.getDocId());
+                    if (meta == null || !fingerprint.equals(meta.typedValues())) {
+                        return null;
+                    }
+                }
+                scopes.add(new TypedScope(collection, entry.getValue(), cfg, index.table(collection.getId(), cfg.schema())));
+            }
+        } catch (final IOException e) {
+            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+        }
+        return scopes;
+    }
+
+    /** whether some collection is configured with typed values (else no comparison is worth rewriting) */
+    boolean hasTypedValueConfigurations() {
+        final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
+        if (manager == null) {
+            return false;
+        }
+        for (final Object spec : manager.getCustomIndexSpecsByCollection(SchemaTypeIndex.ID).values()) {
+            if (spec instanceof SchemaTypeConfig cfg && !cfg.typedValueTypes().isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** the tables of the index */
+    TypeIndexStore store() {
+        return index.store();
     }
 
     private static boolean matchesKind(final short domKind, final int nodeKind) {

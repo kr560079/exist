@@ -107,6 +107,17 @@ public final class SchemaTypeConfig {
         return typedValueTypes;
     }
 
+    /**
+     * The typed-value types as one string (their expanded names, sorted), recorded with each document's typed values
+     * ({@link DocMeta#typedValues()}): a document indexed for other types has no entries for some listed type.
+     */
+    public String typedValuesFingerprint() {
+        return typedValueTypes.stream()
+                .map(name -> '{' + (name.getNamespaceURI() == null ? "" : name.getNamespaceURI()) + '}' + name.getLocalPart())
+                .sorted()
+                .collect(java.util.stream.Collectors.joining(" "));
+    }
+
     /** the compiled schema, null while the configuration is unavailable */
     public @Nullable CompiledSchema schema() {
         return schema;

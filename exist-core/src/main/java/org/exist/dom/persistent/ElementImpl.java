@@ -1258,11 +1258,12 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
                             " is not a child of element " + nodeId);
                 }
 
+                // store the new value first: the custom indexes re-read the attribute from storage
+                broker.updateNode(transaction, existing, true);
+
                 // update old custom indexes
                 final IndexController indexes = broker.getIndexController();
                 indexes.reindex(transaction, existing, ReindexMode.STORE);
-
-                broker.updateNode(transaction, existing, true);
 
                 transaction.commit();
             } catch (final EXistException e) {
@@ -1317,11 +1318,12 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
                             " is not a child of element " + nodeId);
                 }
 
+                // store the new value first: the custom indexes re-read the attribute from storage
+                broker.updateNode(transaction, existing, true);
+
                 // update old custom indexes
                 final IndexController indexes = broker.getIndexController();
                 indexes.reindex(transaction, existing, ReindexMode.STORE);
-
-                broker.updateNode(transaction, existing, true);
 
                 transaction.commit();
             } catch (final EXistException e) {

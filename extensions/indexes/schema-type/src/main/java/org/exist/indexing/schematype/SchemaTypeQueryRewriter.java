@@ -23,11 +23,13 @@ package org.exist.indexing.schematype;
 
 import org.exist.xquery.Constants;
 import org.exist.xquery.LocationStep;
+import org.exist.xquery.NameTest;
 import org.exist.xquery.NodeTest;
 import org.exist.xquery.Pragma;
 import org.exist.xquery.QueryRewriter;
 import org.exist.xquery.TypedNodeTest;
 import org.exist.xquery.XQueryContext;
+import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.xquery.value.Type;
 
 import javax.annotation.Nullable;
@@ -38,12 +40,17 @@ import javax.annotation.Nullable;
  * (spec &sect;7.5), by installing a {@link TypeLookupStep} as the step's {@link LocationStep.IndexLookup}. The step
  * itself is not replaced: its predicates, its context and the fallback to the usual evaluation stay where they are.
  *
+ * <p>A descendant step with a name test whose first predicate compares a schema-typed path with a literal
+ * ({@code //N[M > 5]}) is answered from the typed-value table, see {@link TypedRangeLookup}.</p>
+ *
  * <p>Typed tests with a name ({@code element(N, T)}) are not rewritten: they are answered from the structural index
  * by the name and filtered by type, which is cheaper for the usual, selective names. Nor are tests every node without
  * an annotation passes ({@code element(*, xs:anyType)}, {@code attribute(*, xs:anyAtomicType)}): the index has no
  * entries for unannotated nodes.</p>
  */
 public class SchemaTypeQueryRewriter extends QueryRewriter {
+
+    private @Nullable Boolean typedValuesConfigured = null;
 
     public SchemaTypeQueryRewriter(final XQueryContext context) {
         super(context);
@@ -52,7 +59,20 @@ public class SchemaTypeQueryRewriter extends QueryRewriter {
     @Override
     public @Nullable Pragma rewriteLocationStep(final LocationStep step) {
         final NodeTest test = step.getTest();
-        if (!(test instanceof TypedNodeTest typed) || !typed.isWildcardTest() || step.getIndexLookup() != null) {
+        if (step.getIndexLookup() != null) {
+            return null;
+        }
+        if (!(test instanceof TypedNodeTest typed)) {
+            // a comparison in the first predicate of a named step: the typed-value table
+            if (test instanceof NameTest && step.getPredicates() != null && typedValuesConfigured()) {
+                final TypedRangeLookup lookup = TypedRangeLookup.forStep(step);
+                if (lookup != null) {
+                    step.setIndexLookup(lookup);
+                }
+            }
+            return null;
+        }
+        if (!typed.isWildcardTest()) {
             return null;
         }
         final int kind = typed.getType();
@@ -68,6 +88,16 @@ public class SchemaTypeQueryRewriter extends QueryRewriter {
         step.setIndexLookup(new TypeLookupStep(typed));
         // nothing to wrap the step in: the lookup is part of it
         return null;
+    }
+
+    /** whether some collection has typed values, looked up once per query */
+    private boolean typedValuesConfigured() {
+        if (typedValuesConfigured == null) {
+            typedValuesConfigured = getContext().getBroker() != null
+                    && TypeAnnotationProvider.of(getContext().getBroker()) instanceof SchemaTypeIndexWorker worker
+                    && worker.hasTypedValueConfigurations();
+        }
+        return typedValuesConfigured;
     }
 
     /** whether a node without a stored annotation may pass the test: the index cannot find those */
