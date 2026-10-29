@@ -470,8 +470,6 @@ public class XQueryContext implements BinaryValueManager, Context {
     private InScopeSchemas inScopeSchemas = InScopeSchemas.EMPTY;
     /** what each import schema of this module was authorized by, for re-checks when the query is reused; or null */
     private @Nullable List<ImportedSchema> importedSchemas;
-    /** on the root context: true if this module or any module it imports has an import schema */
-    private volatile boolean anySchemaImports;
     /** document id to the key of the schema it was annotated with, for type identity checks (spec 7.6) */
     private @Nullable it.unimi.dsi.fastutil.ints.Int2ObjectMap<SchemaKey> annotatingSchemas;
     // === End Schema Aware Feature ===
@@ -2621,11 +2619,6 @@ public class XQueryContext implements BinaryValueManager, Context {
         final List<ImportedSchema> grants = importedSchemas == null ? new ArrayList<>(2) : new ArrayList<>(importedSchemas);
         grants.add(schema);
         importedSchemas = List.copyOf(grants);
-        anySchemaImports = true;
-        final XQueryContext root = getRootContext();
-        if (root != null) {
-            root.anySchemaImports = true;
-        }
     }
 
     /**
@@ -2667,11 +2660,30 @@ public class XQueryContext implements BinaryValueManager, Context {
     }
 
     /**
-     * @return on the root context of a query: true if the main module or a module it imports has an
-     *     {@code import schema}
+     * @return true if this context itself recorded an {@code import schema} (not looking at imported modules)
+     */
+    public boolean hasOwnSchemaImports() {
+        return importedSchemas != null;
+    }
+
+    /**
+     * Derived from the recorded imports themselves (so that it holds for copies of a context too): whether this
+     * context, or the context of a module it imports, has imported a schema.
+     *
+     * @return true if this context or an imported module's context has an {@code import schema}
      */
     public boolean hasSchemaImports() {
-        return anySchemaImports;
+        if (importedSchemas != null) {
+            return true;
+        }
+        for (final Iterator<Module> it = getAllModules(); it.hasNext(); ) {
+            final Module module = it.next();
+            if (module instanceof ExternalModule external && external.getContext() != null && external.getContext() != this
+                    && external.getContext().importedSchemas != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ImportedSchema loadImportedSchema(final String ns, @Nullable final String[] locationHints) throws XPathException {

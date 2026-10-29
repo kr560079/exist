@@ -753,6 +753,56 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
 
     @Override
     public @Nullable ImportedSchema configuredSchema(final String namespaceUri) throws XPathException {
+        final Resolution resolution = resolveConfigured(namespaceUri);
+        if (resolution == null) {
+            return null;
+        }
+        try {
+            return loadSchemaWithDependencies(resolution.cfg())
+                    .configuredOn(resolution.collection(), namespaceUri, resolution.key());
+        } catch (final SchemaLoadException e) {
+            LOG.debug("Unable to load the schema configured on {} for import schema: {}", resolution.collections(), e.getMessage());
+            // only collections the user may read are listed
+            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
+                    "Configured schema unavailable for namespace '" + namespaceUri + "' on " + resolution.collections());
+        }
+    }
+
+    @Override
+    public @Nullable SchemaKey configuredSchemaKey(final String namespaceUri) throws XPathException {
+        final Resolution resolution = resolveConfigured(namespaceUri);
+        return resolution == null ? null : resolution.key();
+    }
+
+    @Override
+    public @Nullable SchemaKey configuredSchemaKeyOf(final XmldbURI collectionUri) {
+        final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
+        if (manager == null) {
+            return null;
+        }
+        final Object spec = manager.getCustomIndexSpecsByCollection(SchemaTypeIndex.ID).get(collectionUri);
+        return spec instanceof SchemaTypeConfig cfg && cfg.schema() != null ? cfg.schema().key() : null;
+    }
+
+    /**
+     * The configured schema of a namespace for an import schema without hint.
+     *
+     * @param key the key of the configured schema
+     * @param cfg a configuration with that schema
+     * @param collection the first collection configured with it
+     * @param collections the readable collections configured with it
+     */
+    private record Resolution(SchemaKey key, SchemaTypeConfig cfg, XmldbURI collection, List<String> collections) {
+    }
+
+    /**
+     * Resolve the configured schema of a namespace, as the broker's current subject: only configurations of
+     * collections it may read count.
+     *
+     * @return the resolution, or null if no readable configuration has a schema for the namespace
+     * @throws XPathException {@code XQST0059} if readable configurations have different schemas for it
+     */
+    private @Nullable Resolution resolveConfigured(final String namespaceUri) throws XPathException {
         final CollectionConfigurationManager manager = broker.getBrokerPool().getConfigurationManager();
         if (manager == null) {
             return null;
@@ -780,15 +830,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                             + collectionsByKey.values());
         }
         final SchemaKey key = byKey.keySet().iterator().next();
-        final SchemaTypeConfig cfg = byKey.get(key);
-        try {
-            return loadSchemaWithDependencies(cfg).configuredOn(firstCollection.get(key));
-        } catch (final SchemaLoadException e) {
-            LOG.debug("Unable to load the schema configured on {} for import schema: {}", collectionsByKey.values(), e.getMessage());
-            // only collections the user may read are listed
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
-                    "Configured schema unavailable for namespace '" + namespaceUri + "' on " + collectionsByKey.values());
-        }
+        return new Resolution(key, byKey.get(key), firstCollection.get(key), collectionsByKey.get(key));
     }
 
     /** whether the subject may read the collection */

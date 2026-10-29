@@ -250,11 +250,15 @@ public class XQueryPool implements BrokerPoolService {
      */
     private static boolean callerMayUseSchemasOf(final DBBroker broker, final CompiledXQuery compiledXQuery) {
         final XQueryContext context = compiledXQuery.getContext();
-        if (context == null || !context.hasSchemaImports()) {
+        if (context == null) {
+            return true;
+        }
+        final List<XQueryContext> importing = schemaImportingContexts(context);
+        if (importing.isEmpty()) {
             return true;
         }
         final Subject subject = broker.getCurrentSubject();
-        for (final XQueryContext moduleContext : schemaImportingContexts(context)) {
+        for (final XQueryContext moduleContext : importing) {
             if (!moduleContext.mayUseImportedSchemas(broker, subject)) {
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("Not serving the pooled query {}, the caller may not use one of its imported schemas",
@@ -266,17 +270,27 @@ public class XQueryPool implements BrokerPoolService {
         return true;
     }
 
-    /** the context of the main module and of each imported (external) module */
+    /**
+     * The contexts, of the main module and of each imported (external) module, which recorded schema imports; derived
+     * from the recorded imports, so copies of a context are covered too.
+     */
     private static List<XQueryContext> schemaImportingContexts(final XQueryContext context) {
-        final List<XQueryContext> contexts = new ArrayList<>();
-        contexts.add(context);
+        List<XQueryContext> contexts = null;
+        if (context.hasOwnSchemaImports()) {
+            contexts = new ArrayList<>(2);
+            contexts.add(context);
+        }
         for (final Iterator<Module> it = context.getAllModules(); it.hasNext(); ) {
             final Module module = it.next();
-            if (module instanceof ExternalModule external && external.getContext() != null && external.getContext() != context) {
+            if (module instanceof ExternalModule external && external.getContext() != null && external.getContext() != context
+                    && external.getContext().hasOwnSchemaImports()) {
+                if (contexts == null) {
+                    contexts = new ArrayList<>(2);
+                }
                 contexts.add(external.getContext());
             }
         }
-        return contexts;
+        return contexts == null ? List.of() : contexts;
     }
 
     /**
@@ -303,10 +317,11 @@ public class XQueryPool implements BrokerPoolService {
 
         // ... or one of the documents of an imported schema; checked independently of the caller's permissions
         final XQueryContext context = compiledXQuery.getContext();
-        if (context != null && context.hasSchemaImports()) {
+        final List<XQueryContext> importing = context == null ? List.of() : schemaImportingContexts(context);
+        if (!importing.isEmpty()) {
             broker.pushSubject(broker.getBrokerPool().getSecurityManager().getSystemSubject());
             try {
-                for (final XQueryContext moduleContext : schemaImportingContexts(context)) {
+                for (final XQueryContext moduleContext : importing) {
                     if (!moduleContext.importedSchemasCurrent(broker)) {
                         return false;
                     }

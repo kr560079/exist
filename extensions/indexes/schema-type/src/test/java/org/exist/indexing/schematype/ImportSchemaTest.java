@@ -58,6 +58,7 @@ public class ImportSchemaTest {
     static final XmldbURI OTHER = XmldbURI.create("/db/ist-other");
     static final XmldbURI CONF_OTHER = XmldbURI.create("/db/system/config/db/ist-other");
     static final XmldbURI SCHEMAS = XmldbURI.create("/db/ist-schema");
+    static final XmldbURI QUERIES = XmldbURI.create("/db/ist-q");
 
     static final String OTHER_XSD = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' targetNamespace='" + O_NS + "'"
             + " elementFormDefault='qualified'><xs:element name='root'><xs:complexType><xs:sequence>"
@@ -108,6 +109,57 @@ public class ImportSchemaTest {
             fx.restart();
             assertEquals("2", fx.xquery("import schema namespace t='" + T_NS + "'; count(doc('/db/ist/t1.xml')//element(*, t:Swap))")
                     .itemAt(0).getStringValue());
+        }
+    }
+
+    /** reuse of compiled queries from the query pool */
+    @Nested
+    class Pooled {
+        @RegisterExtension
+        final ExistEmbeddedServer server = new ExistEmbeddedServer(true, true);
+
+        private Fixture fx;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            fx = new Fixture(server);
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            fx.tearDown();
+        }
+
+        @Test
+        void copiedContextWithSchemaImportsIsReauthorizedOnBorrow() throws Exception {
+            // a schema only its owner may read, imported by an outer query
+            fx.store(SCHEMAS, "other.xsd", OTHER_XSD);
+            fx.xquery("sm:chmod(xs:anyURI('/db/ist-schema/other.xsd'), 'rw-------')");
+            fx.xquery("(xmldb:create-collection('/db', 'ist-q'), xmldb:store('/db/ist-q', 'q.xq', '1', 'application/xquery'),"
+                    + " sm:chmod(xs:anyURI('/db/ist-q/q.xq'), 'rwxr-xr-x'))");
+            final org.exist.xquery.XQuery xquery = fx.pool.getXQueryService();
+            final org.exist.xquery.XQueryContext outer = new org.exist.xquery.XQueryContext(fx.pool);
+            xquery.compile(outer, "import schema namespace o='" + O_NS + "' at 'xmldb:exist:///db/ist-schema/other.xsd'; 1");
+
+            // as util:eval does: the stored query is compiled with a copy of the outer context, then pooled
+            final org.exist.xquery.XQueryContext copy = outer.copyContext();
+            assertTrue(copy.hasSchemaImports(), "a copy keeps the recorded schema imports");
+            final org.exist.source.DBSource source;
+            try (final org.exist.dom.persistent.LockedDocument locked = fx.broker.getXMLResource(
+                    XmldbURI.create("/db/ist-q/q.xq"), org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+                source = new org.exist.source.DBSource(fx.pool, (org.exist.dom.persistent.BinaryDocument) locked.getDocument(), true);
+            }
+            final org.exist.storage.XQueryPool queryPool = fx.pool.getXQueryPool();
+            queryPool.returnCompiledXQuery(source, xquery.compile(copy, source));
+
+            final org.exist.security.Subject guest = fx.pool.getSecurityManager().getGuestSubject();
+            try (final DBBroker guestBroker = fx.pool.get(Optional.of(guest))) {
+                assertNull(queryPool.borrowCompiledXQuery(guestBroker, source),
+                        "the guest may not read the imported schema: the pooled query must not be reused for it");
+            }
+            final org.exist.xquery.CompiledXQuery again = queryPool.borrowCompiledXQuery(fx.broker, source);
+            assertNotNull(again, "the entry is kept for users who may use it");
+            queryPool.returnCompiledXQuery(source, again);
         }
     }
 
@@ -187,7 +239,7 @@ public class ImportSchemaTest {
 
         void tearDown() throws Exception {
             try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-                for (final XmldbURI uri : new XmldbURI[] {CONF, CONF_OTHER, ST, OTHER, SCHEMAS}) {
+                for (final XmldbURI uri : new XmldbURI[] {CONF, CONF_OTHER, ST, OTHER, SCHEMAS, QUERIES}) {
                     final Collection col = broker.getCollection(uri);
                     if (col != null) {
                         broker.removeCollection(txn, col);

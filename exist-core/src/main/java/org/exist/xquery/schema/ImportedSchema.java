@@ -21,7 +21,6 @@
  */
 package org.exist.xquery.schema;
 
-import org.exist.collections.Collection;
 import org.exist.dom.persistent.LockedDocument;
 import org.exist.security.Permission;
 import org.exist.security.PermissionDeniedException;
@@ -48,16 +47,32 @@ import java.util.Map;
  * @param remote true if a source was fetched from a remote location
  * @param configuredOn the collection whose configuration supplied the schema (it was then read as the configuration's
  *     owner), or null if the importing user read it
+ * @param configuredNamespace for a configured schema: the imported namespace; otherwise null
+ * @param configuredKey for a configured schema: the key of the schema the configurations gave the namespace; otherwise
+ *     null
  */
 public record ImportedSchema(CompiledSchema schema, Map<String, Long> databaseVersions, boolean remote,
-        @Nullable XmldbURI configuredOn) {
+        @Nullable XmldbURI configuredOn, @Nullable String configuredNamespace, @Nullable SchemaKey configuredKey) {
+
+    /**
+     * A schema the importing user read itself.
+     *
+     * @param schema the schema
+     * @param databaseVersions the versions of its database documents
+     * @param remote true if a source was fetched from a remote location
+     */
+    public ImportedSchema(final CompiledSchema schema, final Map<String, Long> databaseVersions, final boolean remote) {
+        this(schema, databaseVersions, remote, null, null, null);
+    }
 
     /**
      * @param collection the collection whose configuration supplied the schema
-     * @return a copy recording that the schema came from that collection's configuration
+     * @param namespace the imported namespace
+     * @param key the key of the schema the configurations gave the namespace
+     * @return a copy recording that the schema came from the configurations
      */
-    public ImportedSchema configuredOn(final XmldbURI collection) {
-        return new ImportedSchema(schema, databaseVersions, remote, collection);
+    public ImportedSchema configuredOn(final XmldbURI collection, final String namespace, final SchemaKey key) {
+        return new ImportedSchema(schema, databaseVersions, remote, collection, namespace, key);
     }
 
     /**
@@ -73,9 +88,15 @@ public record ImportedSchema(CompiledSchema schema, Map<String, Long> databaseVe
             return false;
         }
         if (configuredOn != null) {
-            try (final Collection collection = broker.openCollection(configuredOn, LockMode.READ_LOCK)) {
-                return collection != null && collection.getPermissionsNoLock().validate(subject, Permission.READ);
-            } catch (final PermissionDeniedException | RuntimeException e) {
+            // as an import without a hint would now: the configurations the user may read must give the namespace
+            // the same single schema (not none, not another, not several)
+            final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
+            if (provider == null) {
+                return false;
+            }
+            try {
+                return configuredKey != null && configuredKey.equals(provider.configuredSchemaKey(configuredNamespace));
+            } catch (final org.exist.xquery.XPathException | RuntimeException e) {
                 return false;
             }
         }
@@ -92,6 +113,13 @@ public record ImportedSchema(CompiledSchema schema, Map<String, Long> databaseVe
      * @return true if no database document of the schema changed since it was loaded
      */
     public boolean isCurrent(final DBBroker broker) {
+        if (configuredOn != null) {
+            // the configuration the schema came from is still there and unchanged
+            final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
+            if (provider == null || configuredKey == null || !configuredKey.equals(provider.configuredSchemaKeyOf(configuredOn))) {
+                return false;
+            }
+        }
         for (final Map.Entry<String, Long> dep : databaseVersions.entrySet()) {
             if (ChecksummingResourceResolver.databaseVersion(broker, dep.getKey()) != dep.getValue()) {
                 return false;

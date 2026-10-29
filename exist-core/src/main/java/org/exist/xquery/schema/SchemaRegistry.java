@@ -236,7 +236,7 @@ public class SchemaRegistry implements BrokerPoolService {
                 final CompiledSchema cached = cache.get(memoEntry.key);
                 if (cached != null) {
                     // only schemas from database documents alone are memoized
-                    return new ImportedSchema(cached, memoEntry.versions, false, null);
+                    return new ImportedSchema(cached, memoEntry.versions, false);
                 }
             }
         }
@@ -295,13 +295,13 @@ public class SchemaRegistry implements BrokerPoolService {
             }
             final CompiledSchema cached = cache.get(key);
             if (cached != null) {
-                return new ImportedSchema(cached, databaseVersions, remote, null);
+                return new ImportedSchema(cached, databaseVersions, remote);
             }
         }
         final CompiledSchema compiled = CompiledSchema.compile(key, model);
         synchronized (lock) {
             final CompiledSchema raced = cache.putIfAbsent(key, compiled);
-            return new ImportedSchema(raced != null ? raced : compiled, databaseVersions, remote, null);
+            return new ImportedSchema(raced != null ? raced : compiled, databaseVersions, remote);
         }
     }
 

@@ -301,6 +301,63 @@ declare %test:assertError("XPST0008") function i:pooled-query-sees-changed-schem
         if ($first = false()) then util:eval($query, true()) else "unexpected"
 };
 
+declare %private function i:cfgver-schema($type as xs:string) as element() {
+    <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:example:cfgver">
+        <xs:simpleType name="{$type}"><xs:restriction base="xs:integer"/></xs:simpleType>
+    </xs:schema>
+};
+
+declare %private function i:cfgver-configure($name as xs:string, $schema as xs:string) {
+    let $collection := xmldb:create-collection("/db", $name)
+    let $config-collection := xmldb:create-collection("/db/system/config/db", $name)
+    return
+        xmldb:store("/db/system/config/db/" || $name, "collection.xconf",
+            <collection xmlns="http://exist-db.org/collection-config/1.0">
+                <index><schema-type href="xmldb:exist:///db/schema-type-test-cfgver/{$schema}"/></index>
+            </collection>)
+};
+
+(:~ pools a no-hint import of the configured schema (version 1 defines c:Old), changes the configurations, runs again :)
+declare %private function i:cfgver-run($change as function(*)) as item()* {
+    let $schemas := (
+        xmldb:create-collection("/db", "schema-type-test-cfgver"),
+        xmldb:store("/db/schema-type-test-cfgver", "v1.xsd", i:cfgver-schema("Old")),
+        xmldb:store("/db/schema-type-test-cfgver", "v2.xsd", i:cfgver-schema("New"))
+    )
+    let $a := i:cfgver-configure("schema-type-test-cfg-a", "v1.xsd")
+    let $query := i:store-query("cfgver.xq", 'import schema namespace c="urn:example:cfgver"; 1 instance of c:Old')
+    let $result :=
+        try {
+            let $pooled := (util:eval($query, true()), util:eval($query, true()))
+            let $changed := $change()
+            return
+                if ($pooled = false()) then util:eval($query, true()) else "unexpected"
+        } catch * {
+            string($err:code) || " " || $err:description
+        }
+    let $cleanup :=
+        for $c in ("/db/system/config/db/schema-type-test-cfg-a", "/db/system/config/db/schema-type-test-cfg-b",
+                "/db/schema-type-test-cfg-a", "/db/schema-type-test-cfg-b", "/db/schema-type-test-cfgver")
+        where xmldb:collection-available($c)
+        return xmldb:remove($c)
+    return
+        $result
+};
+
+declare %test:assertTrue function i:pooled-configured-import-sees-changed-configuration() {
+    (: the collection is reconfigured with version 2, which has no c:Old: the pooled query is recompiled :)
+    let $result := i:cfgver-run(function() { i:cfgver-configure("schema-type-test-cfg-a", "v2.xsd") })
+    return
+        contains($result, "XPST0008")
+};
+
+declare %test:assertTrue function i:pooled-configured-import-sees-new-ambiguity() {
+    (: a second collection configures version 2: the namespace is now ambiguous :)
+    let $result := i:cfgver-run(function() { i:cfgver-configure("schema-type-test-cfg-b", "v2.xsd") })
+    return
+        contains($result, "XQST0059") and contains($result, "ambiguous")
+};
+
 declare %test:assertTrue function i:configured-schema-unavailable-message() {
     (: the only configuration of the namespace names a schema that is gone :)
     let $collection := xmldb:create-collection("/db", "schema-type-test-gone")

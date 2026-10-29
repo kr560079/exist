@@ -98,6 +98,26 @@ public interface TypeAnnotationProvider {
     }
 
     /**
+     * Resolve, as {@link #configuredSchema(String)} does, the key of the schema that collection configurations
+     * readable by the broker's current subject give a namespace, without loading it.
+     *
+     * @param namespaceUri the target namespace
+     * @return the key of the configured schema, or null if no readable configuration has one for the namespace
+     * @throws XPathException {@code XQST0059} if readable configurations have different schemas for the namespace
+     */
+    default @Nullable SchemaKey configuredSchemaKey(final String namespaceUri) throws XPathException {
+        return null;
+    }
+
+    /**
+     * @param collectionUri a collection
+     * @return the key of the schema the collection's own configuration has, or null if it has none (or no usable one)
+     */
+    default @Nullable SchemaKey configuredSchemaKeyOf(final XmldbURI collectionUri) {
+        return null;
+    }
+
+    /**
      * A check of a document about to be stored, fed with its SAX events before anything is written. It vetoes the
      * store by throwing a {@link org.xml.sax.SAXException}.
      */
