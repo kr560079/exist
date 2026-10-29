@@ -387,6 +387,22 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         return path.toString();
     }
 
+    /** whether a stored element has an element sibling with its name */
+    boolean hasSameNameSibling(final ElementImpl element) {
+        if (!(element.getParentStoredNode() instanceof ElementImpl parent)) {
+            return false;
+        }
+        final NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            final IStoredNode<?> sibling = (IStoredNode<?>) children.item(i);
+            if (sibling.getNodeType() == Node.ELEMENT_NODE && !sibling.getNodeId().equals(element.getNodeId())
+                    && sibling.getQName().equals(element.getQName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** the number of element children of {@code parent} before {@code child} with the same name as {@code child} */
     private static int precedingSameName(final ElementImpl parent, final IStoredNode<?> child) {
         final NodeList children = parent.getChildNodes();
@@ -463,7 +479,8 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final Short localTypeId = a.status() == TypeAssigner.Status.ANNOTATED && typeIds.containsKey(a.typeCode())
                     ? table.localOf(a.typeCode()) : null;
             if (localTypeId == null) {
-                if (p.name() != null) {
+                // an unassignable node is listed by the listener, with the untyped subtree it roots
+                if (p.name() != null && a.status() != TypeAssigner.Status.UNASSIGNABLE) {
                     untyped.computeIfAbsent(p.name(), k -> new ArrayList<>()).add(new Member(a.nodeId(), (short) a.nodeKind()));
                 }
                 continue;

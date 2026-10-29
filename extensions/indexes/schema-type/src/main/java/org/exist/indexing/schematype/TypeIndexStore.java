@@ -544,6 +544,27 @@ final class TypeIndexStore {
         return count;
     }
 
+    /** the size of the index file, for measurements */
+    long fileSize() throws IOException {
+        return java.nio.file.Files.size(db.getFile());
+    }
+
+    /** the number of typed-value rows ({@code 0x07}, {@code 0x08}, {@code 0x09}) of a document, for tests */
+    int typedValueRowCountByScan(final int docId) throws IOException {
+        int count = 0;
+        for (final byte table : new byte[] {NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
+            final byte[] prefix = intKey(table, docId);
+            count += keys(prefix, prefix).size();
+        }
+        return count;
+    }
+
+    /** the untyped nodes listed for a name in a document, for tests */
+    List<Member> untypedNodes(final int docId, final NameKey name) throws IOException {
+        final byte[] data = get(concat(intKey(UNTYPED_NODES, docId), name.bytes()));
+        return data == null ? List.of() : decode(data);
+    }
+
     /** the number of rows of the legacy typed-value table ({@code 0x04}), for tests */
     int legacyTypedValueRowCount() throws IOException {
         final byte[] prefix = {LEGACY_TYPED_VALUES};

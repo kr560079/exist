@@ -44,6 +44,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Receives the nodes of a document of a collection with a schema and collects the work for the next
@@ -107,14 +108,19 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     private final Deque<StringBuilder> texts = new ArrayDeque<>();
     private final List<AttrValue> attrValues = new ArrayList<>();
     private final List<Pending> pending = new ArrayList<>();
-    /** the names of the nodes of the pass whose assignment has not been drained, by node id */
-    private final Map<String, Received> undrained = new HashMap<>();
+    /**
+     * The nodes of the pass whose assignment has not been drained, or was unassignable, in document order (only with
+     * typed values, like the other name bookkeeping); NodeId has no hashCode
+     */
+    private final TreeMap<NodeId, Received> undrained = new TreeMap<>();
     /** the nodes of the pass known to be untyped, by name */
     private final Map<TypeIndexStore.NameKey, List<TypeIndexStore.Member>> untyped = new HashMap<>();
     /** the flags of the names of the nodes received since the last {@link #takeNames()} */
     private final Map<TypeIndexStore.NameKey, Byte> names = new HashMap<>();
     /** per open element of the pass: the number of its element children by name */
     private final Deque<Map<TypeIndexStore.NameKey, Integer>> childNames = new ArrayDeque<>();
+    /** whether the root of a seeded pass has an element sibling of its name */
+    private boolean seededRootRepeated;
     private boolean clearBeforeWrite;
     private boolean rootEnded;
     private final List<String> unassignablePaths = new ArrayList<>();
@@ -158,6 +164,9 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                             + element.getQName().getStringValue() + '[' + ((preceding == null ? 0 : preceding) + 1) + ']';
                     if (beginPass(PassKind.SEEDED, element.getNodeId(), path0, seed.namespaces())) {
                         assigner.startSubtree(seed.parentType(), seed.parentNilled(), seed.parentPath(), seed.preceding());
+                        // below an unannotated parent nothing is typed (and listed as untyped): no need to look, and
+                        // the siblings may be transient (the old node of a replace, before its parent is reassigned)
+                        seededRootRepeated = collectValues && seed.parentType() != null && worker.hasSameNameSibling(element);
                     }
                 }
             } else if (mode == ReindexMode.REMOVE_SOME_NODES) {
@@ -183,19 +192,21 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
             }
             final Map<String, String> inScope = scope;
             final QName name = element.getQName();
-            final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ELEMENT_NODE, name);
-            byte flags = 0;
-            if (childNames.isEmpty()) {
-                // the root of a seeded pass: its siblings are not received
-                if (kind == PassKind.SEEDED) {
+            if (collectValues) {
+                final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ELEMENT_NODE, name);
+                byte flags = 0;
+                if (childNames.isEmpty()) {
+                    // the root of a seeded pass: its siblings are not received, but were looked up
+                    if (kind == PassKind.SEEDED && seededRootRepeated) {
+                        flags = TypeIndexStore.SUMMARY_REPEATED;
+                    }
+                } else if (childNames.peek().merge(key, 1, Integer::sum) > 1) {
                     flags = TypeIndexStore.SUMMARY_REPEATED;
                 }
-            } else if (childNames.peek().merge(key, 1, Integer::sum) > 1) {
-                flags = TypeIndexStore.SUMMARY_REPEATED;
+                childNames.push(new HashMap<>());
+                names.merge(key, flags, (a, b) -> (byte) (a | b));
+                undrained.put(element.getNodeId(), new Received(key, element.getNodeId(), Node.ELEMENT_NODE));
             }
-            childNames.push(new HashMap<>());
-            names.merge(key, flags, (a, b) -> (byte) (a | b));
-            undrained.put(element.getNodeId().toString(), new Received(key, element.getNodeId(), Node.ELEMENT_NODE));
             assigner.startElement(element.getNodeId(), name, prefix -> resolvePrefix(inScope, name, prefix));
             drain(null, null);
         }
@@ -206,9 +217,11 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     public void attribute(final Txn transaction, final AttrImpl attrib, final NodePath path) {
         if (inPass()) {
             final String value = attrib.getValue();
-            final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ATTRIBUTE_NODE, attrib.getQName());
-            names.merge(key, (byte) 0, (a, b) -> (byte) (a | b));
-            undrained.put(attrib.getNodeId().toString(), new Received(key, attrib.getNodeId(), Node.ATTRIBUTE_NODE));
+            if (collectValues && !isXsi(attrib.getQName())) {
+                final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ATTRIBUTE_NODE, attrib.getQName());
+                names.merge(key, (byte) 0, (a, b) -> (byte) (a | b));
+                undrained.put(attrib.getNodeId(), new Received(key, attrib.getNodeId(), Node.ATTRIBUTE_NODE));
+            }
             assigner.attribute(attrib.getNodeId(), attrib.getQName(), value);
             if (collectValues) {
                 attrValues.add(new AttrValue(attrib.getNodeId(), value));
@@ -224,13 +237,15 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                 if (beginPass(PassKind.SEEDED, attrib.getNodeId(), path0, Map.of())) {
                     final TypeAssigner.Assignment a = assigner.assignAttribute(seed.parentType(), seed.parentPath(),
                             attrib.getNodeId(), attrib.getQName(), attrib.getValue());
-                    final TypeIndexStore.NameKey key = TypeIndexStore.NameKey.of(Node.ATTRIBUTE_NODE, attrib.getQName());
+                    final TypeIndexStore.NameKey key = collectValues && !isXsi(attrib.getQName())
+                            ? TypeIndexStore.NameKey.of(Node.ATTRIBUTE_NODE, attrib.getQName()) : null;
+                    if (key != null) {
+                        names.merge(key, (byte) 0, (x, y) -> (byte) (x | y));
+                    }
                     if (a != null) {
                         rejectIfRequired(a);
                         pending.add(new Pending(a, collectValues ? attrib.getValue() : null, key));
-                        names.merge(key, (byte) 0, (x, y) -> (byte) (x | y));
-                    } else {
-                        names.merge(key, (byte) 0, (x, y) -> (byte) (x | y));
+                    } else if (key != null) {
                         untyped.computeIfAbsent(key, k -> new ArrayList<>())
                                 .add(new TypeIndexStore.Member(attrib.getNodeId(), Node.ATTRIBUTE_NODE));
                     }
@@ -277,6 +292,10 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
             depth--;
         }
         super.endElement(transaction, element, path);
+    }
+
+    private static boolean isXsi(final QName name) {
+        return XMLConstants.W3C_XML_SCHEMA_INSTANCE_NS_URI.equals(name.getNamespaceURI());
     }
 
     /** true while the nodes of an assignment pass are being received */
@@ -346,7 +365,9 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
                     lexical = endedText;
                 }
             }
-            final Received received = undrained.remove(assignment.nodeId().toString());
+            // an unassignable node stays: it is untyped, and roots the untyped subtree below it
+            final Received received = assignment.status() == TypeAssigner.Status.UNASSIGNABLE
+                    ? undrained.get(assignment.nodeId()) : undrained.remove(assignment.nodeId());
             pending.add(new Pending(assignment, lexical, received == null ? null : received.name()));
         }
     }
@@ -417,9 +438,20 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
      * assignment (e.g. below an unannotated parent, or the content of a skip wildcard).
      */
     Map<TypeIndexStore.NameKey, List<TypeIndexStore.Member>> takeUntyped() {
-        if (rootEnded) {
+        if (rootEnded && !undrained.isEmpty()) {
+            // Per name, the roots of the untyped subtrees with nodes of that name, not every node: a lookup over the
+            // name falls back while one is listed, and removing or reassigning the root removes it.
+            final TreeMap<NodeId, NodeId> rootOf = new TreeMap<>();
+            final Map<TypeIndexStore.NameKey, TreeMap<NodeId, Short>> roots = new HashMap<>();
             for (final Received node : undrained.values()) {
-                untyped.computeIfAbsent(node.name(), k -> new ArrayList<>()).add(new TypeIndexStore.Member(node.id(), node.kind()));
+                final NodeId parentRoot = node.id().getTreeLevel() > 1 ? rootOf.get(node.id().getParentId()) : null;
+                final NodeId root = parentRoot != null ? parentRoot : node.id();
+                rootOf.put(node.id(), root);
+                roots.computeIfAbsent(node.name(), k -> new TreeMap<>()).putIfAbsent(root, undrained.get(root).kind());
+            }
+            for (final Map.Entry<TypeIndexStore.NameKey, TreeMap<NodeId, Short>> entry : roots.entrySet()) {
+                final List<TypeIndexStore.Member> members = untyped.computeIfAbsent(entry.getKey(), k -> new ArrayList<>());
+                entry.getValue().forEach((id, k) -> members.add(new TypeIndexStore.Member(id, k)));
             }
             undrained.clear();
         }
@@ -477,6 +509,7 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         pending.clear();
         undrained.clear();
         untyped.clear();
+        seededRootRepeated = false;
         names.clear();
         childNames.clear();
         clearBeforeWrite = false;

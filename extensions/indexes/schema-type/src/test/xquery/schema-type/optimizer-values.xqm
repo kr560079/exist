@@ -185,7 +185,7 @@ declare %test:setUp function v:setUp() {
     xmldb:store($v:VALUES_COLLECTION, "values.xml", $v:VALUES),
     xmldb:store($v:VALUES_COLLECTION, "dup.xml", $v:DUP),
     xmldb:store($v:VALUES_COLLECTION, "untyped.xml", $v:UNTYPED),
-    for $i in 1 to 5 return xmldb:store($v:VALUES_COLLECTION, "upd-" || $i || ".xml", $v:UPD),
+    for $i in 1 to 6 return xmldb:store($v:VALUES_COLLECTION, "upd-" || $i || ".xml", $v:UPD),
     xmldb:store($v:VALUES_COLLECTION, "long.xml", $v:LONG),
     xmldb:reindex($v:VALUES_COLLECTION),
     xmldb:create-collection("/db", "schema-type-vrange"),
@@ -376,6 +376,9 @@ declare %test:assertTrue function v:update-replace() {
         and v:veval('count(doc("/db/schema-type-values/upd-1.xml")//vv:item[vv:dec > 700])') eq 1
         and v:veval('count(doc("/db/schema-type-values/upd-1.xml")//vv:item[vv:dec = 1])') eq 0
         and v:vuses-index('doc("/db/schema-type-values/upd-1.xml")//vv:item[vv:dec > 700]')
+        (: the replaced element has no sibling of its name: value comparisons are still answered :)
+        and v:vsame('doc("/db/schema-type-values/upd-1.xml")//vv:item[vv:dec gt 700]')
+        and v:vuses-index('doc("/db/schema-type-values/upd-1.xml")//vv:item[vv:dec gt 700]')
 };
 declare %test:assertTrue function v:update-insert() {
     let $u := update insert <vv:item><vv:dec>888</vv:dec></vv:item> into doc("/db/schema-type-values/upd-2.xml")/vv:items
@@ -392,6 +395,23 @@ declare %test:assertTrue function v:update-value() {
         and v:vsame('doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec > 500]')
         and v:veval('count(doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec > 500])') eq 1
         and v:veval('count(doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec = 1])') eq 0
+        and v:vuses-index('doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec > 500]')
+        (: a changed value of a non-repeated element: value comparisons are still answered :)
+        and v:vsame('doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec gt 500]')
+        and v:veval('count(doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec gt 500])') eq 1
+        and v:vuses-index('doc("/db/schema-type-values/upd-3.xml")//vv:item[vv:dec gt 500]')
+};
+declare %test:assertTrue function v:update-insert-repeated() {
+    let $u := update insert <vv:dec>3</vv:dec> following doc("/db/schema-type-values/upd-6.xml")/vv:items/vv:item[1]/vv:dec
+    return
+        empty($u)
+        (: an item with two vv:dec: a value comparison over them raises XPTY0004, which only the step knows :)
+        and v:vsame-or-error('doc("/db/schema-type-values/upd-6.xml")//vv:item[vv:dec gt 0]')
+        and not(v:vuses-index('doc("/db/schema-type-values/upd-6.xml")//vv:item[vv:dec gt 0]'))
+        (: a general comparison is still answered :)
+        and v:vsame('doc("/db/schema-type-values/upd-6.xml")//vv:item[vv:dec > 2]')
+        and v:veval('count(doc("/db/schema-type-values/upd-6.xml")//vv:item[vv:dec > 2])') eq 1
+        and v:vuses-index('doc("/db/schema-type-values/upd-6.xml")//vv:item[vv:dec > 2]')
 };
 
 (: --- updates which make the index incomplete, or leave it complete --- :)

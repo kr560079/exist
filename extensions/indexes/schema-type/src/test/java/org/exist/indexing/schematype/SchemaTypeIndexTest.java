@@ -80,6 +80,10 @@ public class SchemaTypeIndexTest {
             + "<typed-values><type name='t:NonNegativeDecimal'/><type name='xs:decimal'/><type name='xs:ID'/></typed-values>"
             + "</index></collection>";
 
+    /** the configuration without typed values: annotations only */
+    private static final String XCONF_ANNOTATIONS = "<collection xmlns='" + CC + "'><index>"
+            + "<schema-type href='xmldb:exist:///db/st-schema/trade.xsd'/></index></collection>";
+
     private static final String T1 = "<t:trade xmlns:t='" + T_NS + "'>"
             + "<t:tradeId>T1</t:tradeId><t:swap/>"
             + "<t:notional><t:amount>100</t:amount><t:currency>USD</t:currency></t:notional>"
@@ -439,12 +443,54 @@ public class SchemaTypeIndexTest {
         assertNotNull(replaced);
         assertEquals(0, replaced.flags() & TypeIndexStore.SUMMARY_UNTYPED);
         assertTrue(usesSchemaTypeIndex("doc('/db/st/t1.xml')//t:notional[t:amount > 700]"));
+        // a changed value of a non-repeated element: not repeated
+        query("update value doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with '778'");
+        assertEquals(0, index().store().getSummary(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("amount", T_NS))).flags());
+        assertTrue(usesSchemaTypeIndex("doc('/db/st/t1.xml')//t:notional[t:amount gt 700]"));
         // an inserted sibling of the same name: repeated
         query("update insert <t:amount>5</t:amount> following doc('/db/st/t1.xml')/t:trade/t:notional/t:amount");
         final TypeIndexStore.Summary repeated = index().store().getSummary(docId,
                 TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("amount", T_NS)));
         assertNotNull(repeated);
         assertEquals(TypeIndexStore.SUMMARY_REPEATED, repeated.flags() & TypeIndexStore.SUMMARY_REPEATED);
+        assertFalse(usesSchemaTypeIndex("doc('/db/st/t1.xml')//t:notional[t:amount gt 700]"));
+    }
+
+    @Test
+    void untypedSubtreesAreListedByTheirRoot() throws Exception {
+        // bad.xml: t:bogus is unassignable, its content untyped; list only the root of an untyped subtree per name
+        final int docId = doc(ST, "bad.xml").getDocId();
+        final NodeProxy bogus = node("/db/st/bad.xml", "/t:trades/t:trade[1]/t:bogus");
+        query("update insert <t:deep><t:x><t:x/><t:x/></t:x></t:deep> into doc('/db/st/bad.xml')/t:trades/t:trade[1]/t:bogus");
+        final java.util.List<TypeIndexStore.Member> xs = index().store().untypedNodes(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("x", T_NS)));
+        assertEquals(1, xs.size(), "one root for the three t:x");
+        // the insert reassigns the unassignable parent: the subtree is listed by it
+        assertTrue(xs.getFirst().nodeId().isDescendantOrSelfOf(bogus.getNodeId()));
+        // xsi:* attributes are never recorded
+        final int trades = doc(ST, "trades.xml").getDocId();
+        assertNull(index().store().getSummary(trades, TypeIndexStore.NameKey.of(org.w3c.dom.Node.ATTRIBUTE_NODE,
+                new QName("nil", javax.xml.XMLConstants.W3C_XML_SCHEMA_INSTANCE_NS_URI))));
+        // removing the subtree drops the root again
+        query("update delete doc('/db/st/bad.xml')/t:trades/t:trade[1]/t:bogus/t:deep");
+        assertTrue(index().store().untypedNodes(docId,
+                TypeIndexStore.NameKey.of(org.w3c.dom.Node.ELEMENT_NODE, new QName("x", T_NS))).isEmpty());
+    }
+
+    @Test
+    void annotationOnlyCollectionKeepsNoTypedValueRows() throws Exception {
+        store(CONF_PLAIN2, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_ANNOTATIONS);
+        store(PLAIN2, "t1.xml", T1);
+        store(PLAIN2, "bad.xml", fixture("bad.xml"));
+        query("update value doc('/db/plain2/t1.xml')/t:trade/t:notional/t:amount with '5'");
+        query("update insert <t:amount>6</t:amount> following doc('/db/plain2/t1.xml')/t:trade/t:notional/t:amount");
+        for (final String name : new String[] {"t1.xml", "bad.xml"}) {
+            final int docId = doc(PLAIN2, name).getDocId();
+            assertEquals(0, index().store().typedValueRowCountByScan(docId), name);
+        }
+        assertNotNull(index().store().getAnnotation(doc(PLAIN2, "t1.xml").getDocId(),
+                node("/db/plain2/t1.xml", "/t:trade/t:tradeId").getNodeId()));
     }
 
     @Test
