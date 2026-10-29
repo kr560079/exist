@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+
+    eXist-db Open Source Native XML Database
+    Copyright (C) 2001 The eXist-db Authors
+
+    info@exist-db.org
+    http://www.exist-db.org
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2.1 of the License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="urn:example:trade"
+           targetNamespace="urn:example:trade"
+           elementFormDefault="qualified">
+
+    <xs:include schemaLocation="trade-common.xsd"/>
+
+    <!-- products and substitution groups -->
+
+    <xs:complexType name="Product" abstract="true">
+        <xs:sequence>
+            <xs:element name="productType" type="xs:string" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute name="id" type="xs:ID"/>
+    </xs:complexType>
+
+    <xs:complexType name="Swap">
+        <xs:complexContent>
+            <xs:extension base="t:Product"/>
+        </xs:complexContent>
+    </xs:complexType>
+
+    <xs:complexType name="Fra">
+        <xs:complexContent>
+            <xs:extension base="t:Product">
+                <xs:sequence>
+                    <xs:element name="legs" minOccurs="0">
+                        <xs:complexType>
+                            <xs:sequence>
+                                <xs:element ref="t:blockedSwap" minOccurs="0" maxOccurs="unbounded"/>
+                            </xs:sequence>
+                        </xs:complexType>
+                    </xs:element>
+                </xs:sequence>
+            </xs:extension>
+        </xs:complexContent>
+    </xs:complexType>
+
+    <xs:complexType name="VanillaSwap">
+        <xs:complexContent>
+            <xs:extension base="t:Swap"/>
+        </xs:complexContent>
+    </xs:complexType>
+
+    <xs:element name="product" type="t:Product" abstract="true"/>
+    <xs:element name="swap" type="t:Swap" substitutionGroup="t:product"/>
+    <xs:element name="fra" type="t:Fra" substitutionGroup="t:product"/>
+    <xs:element name="vanillaSwap" type="t:VanillaSwap" substitutionGroup="t:swap"/>
+
+    <!-- substitution for this head is blocked: only blockedSwap itself may appear in t:Fra/legs -->
+    <xs:element name="blockedSwap" type="t:Swap" block="substitution"/>
+    <xs:element name="blockedSwapMember" type="t:VanillaSwap" substitutionGroup="t:blockedSwap"/>
+
+    <!-- dates -->
+
+    <xs:complexType name="AdjustableDate">
+        <xs:simpleContent>
+            <xs:extension base="xs:date">
+                <xs:attribute name="id" type="xs:ID"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <!-- trades -->
+
+    <xs:element name="trades">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element ref="t:trade" maxOccurs="unbounded"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="trade">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="tradeId" type="xs:string" nillable="true" minOccurs="0"/>
+                <xs:element name="tradeDate" type="t:AdjustableDate" minOccurs="0"/>
+                <xs:element ref="t:product"/>
+                <xs:element name="notional" minOccurs="0">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="amount" type="t:NonNegativeDecimal"/>
+                            <xs:element name="currency" type="t:CurrencyCode"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="fee" minOccurs="0">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="amount" type="xs:decimal"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="party" minOccurs="0" maxOccurs="unbounded">
+                    <xs:complexType>
+                        <xs:attribute name="id" type="xs:ID"/>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="partyReference" minOccurs="0">
+                    <xs:complexType>
+                        <xs:attribute name="href" type="xs:IDREF"/>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="description" minOccurs="0">
+                    <xs:complexType mixed="true">
+                        <xs:sequence/>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="extension" minOccurs="0">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:any namespace="##other" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="opaque" minOccurs="0">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:any processContents="skip" minOccurs="0" maxOccurs="unbounded"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="fixingDates" type="t:DateList" minOccurs="0"/>
+                <xs:element name="rates" type="t:DecimalList" minOccurs="0"/>
+                <!-- version 2 of the schema: one extra optional element -->
+                <xs:element name="note" type="xs:string" minOccurs="0"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+</xs:schema>

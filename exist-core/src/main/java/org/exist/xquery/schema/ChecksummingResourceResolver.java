@@ -174,16 +174,7 @@ class ChecksummingResourceResolver implements LSResourceResolver {
         if (catalogResolver != null) {
             final LSInput catalogued = catalogResolver.resolveResource(type, namespaceURI, publicId, systemId, baseURI);
             if (catalogued != null) {
-                final String id = catalogued.getSystemId() != null ? catalogued.getSystemId() : systemId;
-                final String catalogDbPath = toDatabasePath(id, null);
-                if (catalogDbPath != null) {
-                    final String dbId = XMLDB_EXIST_PREFIX + catalogDbPath;
-                    return record(dbId, publicId, readFromDatabase(catalogDbPath, dbId));
-                }
-                checkRemote(id);
-                catalogIds.add(id);
-                uncheckable = true;
-                return record(id, publicId, readAll(catalogued, id));
+                return recordCatalogued(catalogued, systemId, publicId);
             }
         }
 
@@ -205,6 +196,42 @@ class ChecksummingResourceResolver implements LSResourceResolver {
         } catch (final IOException | IllegalArgumentException e) {
             throw new ResolutionException("unable to read schema document " + absolute + ": " + e.getMessage(), absolute, e);
         }
+    }
+
+    /**
+     * Resolves the root document of a schema from the XML catalog alone, by its target namespace; the namespace
+     * is never fetched as a location.
+     *
+     * @param namespaceUri the target namespace
+     * @return the input to hand to the schema loader
+     * @throws ResolutionException if the catalog has no schema for the namespace
+     */
+    LSInput resolveRootFromCatalog(final String namespaceUri) {
+        try {
+            final LSInput catalogued = catalogResolver == null ? null
+                    : catalogResolver.resolveResource(javax.xml.XMLConstants.W3C_XML_SCHEMA_NS_URI, namespaceUri, null, null, null);
+            if (catalogued == null || catalogued.getSystemId() == null) {
+                throw new ResolutionException("no schema for namespace " + namespaceUri + " in the catalog", null, null);
+            }
+            return recordCatalogued(catalogued, catalogued.getSystemId(), null);
+        } catch (final ResolutionException e) {
+            throw fail(e);
+        } catch (final RuntimeException e) {
+            throw fail(new ResolutionException("unable to resolve namespace " + namespaceUri + " in the catalog: " + e.getMessage(), null, e));
+        }
+    }
+
+    private LSInput recordCatalogued(final LSInput catalogued, final String systemId, @Nullable final String publicId) {
+        final String id = catalogued.getSystemId() != null ? catalogued.getSystemId() : systemId;
+        final String catalogDbPath = toDatabasePath(id, null);
+        if (catalogDbPath != null) {
+            final String dbId = XMLDB_EXIST_PREFIX + catalogDbPath;
+            return record(dbId, publicId, readFromDatabase(catalogDbPath, dbId));
+        }
+        checkRemote(id);
+        catalogIds.add(id);
+        uncheckable = true;
+        return record(id, publicId, readAll(catalogued, id));
     }
 
     private LSInput record(final String id, @Nullable final String publicId, final byte[] bytes) {

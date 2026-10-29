@@ -75,6 +75,8 @@ public class SchemaRegistry implements BrokerPoolService {
     private LinkedHashMap<SchemaKey, CompiledSchema> cache;
     // guarded by lock; remembers what a (location, allowRemote) resolved to, so unchanged schemas are not re-parsed
     private LinkedHashMap<MemoKey, MemoEntry> memo = newMemo();
+    // guarded by lock; the cached schemas that some collection configuration loaded (not only a query's import schema)
+    private final java.util.Set<SchemaKey> configured = new java.util.HashSet<>();
     private final java.util.concurrent.atomic.AtomicInteger parseCount = new java.util.concurrent.atomic.AtomicInteger();
 
     public SchemaRegistry() {
@@ -92,6 +94,7 @@ public class SchemaRegistry implements BrokerPoolService {
             protected boolean removeEldestEntry(final Map.Entry<SchemaKey, CompiledSchema> eldest) {
                 if (size() > cacheSize) {
                     memo.values().removeIf(m -> m.key.equals(eldest.getKey()));
+                    configured.remove(eldest.getKey());
                     return true;
                 }
                 return false;
@@ -108,7 +111,8 @@ public class SchemaRegistry implements BrokerPoolService {
         };
     }
 
-    private record MemoKey(String href, boolean allowRemote) {
+    /** @param namespace true if {@code href} is a target namespace looked up in the catalog, not a location */
+    private record MemoKey(String href, boolean allowRemote, boolean namespace) {
     }
 
     /** The key a location resolved to, and the version of every database document it depended on. */
@@ -134,6 +138,7 @@ public class SchemaRegistry implements BrokerPoolService {
             this.cacheSize = Math.max(1, configuration.getInteger(PROPERTY_CACHE_SIZE, DEFAULT_CACHE_SIZE));
             this.memo = newMemo();
             this.cache = newCache();
+            this.configured.clear();
             this.remoteGate = Boolean.TRUE.equals(configuration.getProperty(PROPERTY_ALLOW_REMOTE));
         }
         final Object resolver = configuration.getProperty(XMLReaderObjectFactory.CATALOG_RESOLVER);
@@ -151,12 +156,53 @@ public class SchemaRegistry implements BrokerPoolService {
      * @throws SchemaLoadException if the schema cannot be read, is not valid or uses a forbidden construct
      */
     public CompiledSchema load(final DBBroker broker, final String href, final boolean allowRemote) throws SchemaLoadException {
+        final CompiledSchema schema = load(broker, href, allowRemote, false);
+        synchronized (lock) {
+            if (cache.containsKey(schema.key())) {
+                configured.add(schema.key());
+            }
+        }
+        return schema;
+    }
+
+    /**
+     * Loads and compiles a schema for a query's {@code import schema}, from a location hint. Database documents are
+     * read as the broker's current subject, i.e. the user running the query; {@code http}, {@code https} and
+     * {@code ftp} locations are fetched only if the server-level {@code allow-remote} gate is on.
+     *
+     * @param broker the broker of the query
+     * @param href the location hint
+     * @return the compiled schema
+     * @throws SchemaLoadException if the schema cannot be read, is not valid or uses a forbidden construct
+     */
+    public CompiledSchema loadForQuery(final DBBroker broker, final String href) throws SchemaLoadException {
+        return load(broker, href, true, false);
+    }
+
+    /**
+     * Loads and compiles the schema that the XML catalog maps a target namespace to, for a query's
+     * {@code import schema} without a location hint. The namespace itself is never fetched.
+     *
+     * @param broker the broker of the query
+     * @param namespaceUri the target namespace
+     * @return the compiled schema
+     * @throws SchemaLoadException if the catalog has no usable schema for the namespace
+     */
+    public CompiledSchema loadFromCatalog(final DBBroker broker, final String namespaceUri) throws SchemaLoadException {
+        if (catalogResolver == null) {
+            throw new SchemaLoadException("no catalog is configured to resolve namespace " + namespaceUri, null, -1, -1, null);
+        }
+        return load(broker, namespaceUri, true, true);
+    }
+
+    private CompiledSchema load(final DBBroker broker, final String href, final boolean allowRemote, final boolean namespace)
+            throws SchemaLoadException {
         final boolean gate;
         synchronized (lock) {
             gate = remoteGate;
         }
         final boolean effectiveAllowRemote = allowRemote && gate;
-        final MemoKey memoKey = new MemoKey(href, effectiveAllowRemote);
+        final MemoKey memoKey = new MemoKey(href, effectiveAllowRemote, namespace);
         final MemoEntry memoEntry;
         synchronized (lock) {
             memoEntry = memo.get(memoKey);
@@ -189,7 +235,7 @@ public class SchemaRegistry implements BrokerPoolService {
             }
             loader.setErrorHandler(errors);
             loader.setParameter("resource-resolver", resolver);
-            final LSInput root = resolver.resolveRoot(href);
+            final LSInput root = namespace ? resolver.resolveRootFromCatalog(href) : resolver.resolveRoot(href);
             model = loader.load(root);
         } catch (final ChecksummingResourceResolver.ResolutionException e) {
             throw toException(e);
@@ -243,18 +289,26 @@ public class SchemaRegistry implements BrokerPoolService {
     }
 
     /**
+     * Find a loaded schema for a target namespace, preferring the schemas loaded for collection configurations over
+     * those only a query's {@code import schema} loaded (e.g. another version of the namespace's schema).
+     *
      * @param namespaceUri a target namespace
-     * @return the most recently used cached schema that declares {@code namespaceUri} as a target namespace
+     * @return the most recently used cached schema that declares {@code namespaceUri} as a target namespace and that a
+     *     collection configuration loaded; failing that, the most recently used such schema
      */
     public Optional<CompiledSchema> loadedForNamespace(final String namespaceUri) {
         synchronized (lock) {
             CompiledSchema found = null;
+            CompiledSchema foundConfigured = null;
             for (final CompiledSchema schema : cache.values()) {   // iteration runs least to most recently used
                 if (schema.targetNamespaces().contains(namespaceUri)) {
                     found = schema;
+                    if (configured.contains(schema.key())) {
+                        foundConfigured = schema;
+                    }
                 }
             }
-            return Optional.ofNullable(found);
+            return Optional.ofNullable(foundConfigured != null ? foundConfigured : found);
         }
     }
 

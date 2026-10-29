@@ -90,6 +90,11 @@ import org.exist.util.hashtable.NamePool;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.parser.*;
 import org.exist.xquery.pragmas.*;
+import org.exist.xquery.schema.CompiledSchema;
+import org.exist.xquery.schema.InScopeSchemas;
+import org.exist.xquery.schema.SchemaKey;
+import org.exist.xquery.schema.SchemaLoadException;
+import org.exist.xquery.schema.SchemaRegistry;
 import org.exist.xquery.update.Modification;
 import org.exist.xquery.util.DocUtils;
 import org.exist.xquery.util.SerializerUtils;
@@ -458,6 +463,13 @@ public class XQueryContext implements BinaryValueManager, Context {
      */
     private boolean pushedUserFromHttpSession = false;
 
+    // === Schema Aware Feature ===
+    /** the in-scope schema definitions of this module: the schemas of its {@code import schema} declarations */
+    private InScopeSchemas inScopeSchemas = InScopeSchemas.EMPTY;
+    /** document id to the key of the schema it was annotated with, for type identity checks (spec 7.6) */
+    private @Nullable it.unimi.dsi.fastutil.ints.Int2ObjectMap<SchemaKey> annotatingSchemas;
+    // === End Schema Aware Feature ===
+
     /**
      * The HTTP context within which the XQuery
      * is executing, or null if there is no
@@ -823,6 +835,7 @@ public class XQueryContext implements BinaryValueManager, Context {
 
         ctx.source = this.source;
         ctx.httpContext = this.httpContext;
+        ctx.inScopeSchemas = this.inScopeSchemas;
     }
 
     @Override
@@ -1572,6 +1585,9 @@ public class XQueryContext implements BinaryValueManager, Context {
 
         // a reused context starts a fresh execution, with no scope open
         binaryValueFrameDepth = 0;
+
+        // documents may be re-annotated between executions
+        annotatingSchemas = null;
 
         // clear inline functions using closures
         closures.forEach(func -> func.setClosureVariables(null));
@@ -2528,6 +2544,156 @@ public class XQueryContext implements BinaryValueManager, Context {
     public void setModuleLoadPath(final String path) {
         this.moduleLoadPath = path;
     }
+
+    // === Schema Aware Feature ===
+
+    /**
+     * @return the in-scope schema definitions of this module; {@link InScopeSchemas#EMPTY} if it has no
+     *     {@code import schema}
+     */
+    public InScopeSchemas getInScopeSchemas() {
+        return inScopeSchemas;
+    }
+
+    /**
+     * Process an {@code import schema} declaration (XQuery 3.1 §4.12): load the schema and add it to the in-scope
+     * schema definitions, binding the prefix (or the default element namespace) to its target namespace.
+     *
+     * <p>The schema is loaded from the first location hint that yields a schema for the namespace. Without hints,
+     * a schema of the namespace that a collection configuration loaded is used, then the XML catalog. Schema documents
+     * are read through the {@link SchemaRegistry} as the current user; remote locations only if the server allows
+     * remote schema access.</p>
+     *
+     * @param prefix the prefix to bind, or null
+     * @param namespaceUri the target namespace, {@code ""} for no namespace
+     * @param locationHints the location hints, or null
+     * @param defaultElementNamespace true if the namespace becomes the default element namespace
+     * @return the imported schema
+     * @throws XPathException {@code XQST0057} if a prefix is bound to the empty namespace, {@code XQST0058} if the
+     *     namespace was imported before, {@code XQST0059} if no schema for the namespace can be loaded
+     */
+    public CompiledSchema importSchema(@Nullable final String prefix, final String namespaceUri,
+            @Nullable final String[] locationHints, final boolean defaultElementNamespace) throws XPathException {
+        final String ns = namespaceUri == null ? "" : namespaceUri;
+        if (prefix != null && ns.isEmpty()) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0057,
+                    "import schema binds the prefix '" + prefix + "' to the zero-length namespace");
+        }
+        if (inScopeSchemas.schemaFor(ns).isPresent()) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0058,
+                    "More than one import schema for the target namespace '" + ns + "'");
+        }
+        final CompiledSchema schema = loadImportedSchema(ns, locationHints);
+        declareInScopeSchema(prefix, ns, schema, defaultElementNamespace);
+        return schema;
+    }
+
+    /**
+     * Add an already loaded schema to the in-scope schema definitions, binding the prefix (or the default element
+     * namespace) to its target namespace. Unlike {@link #importSchema(String, String, String[], boolean)}, a schema
+     * already in scope for the namespace is replaced.
+     *
+     * @param prefix the prefix to bind, or null
+     * @param namespaceUri the target namespace, {@code ""} for no namespace
+     * @param schema the schema
+     * @param defaultElementNamespace true if the namespace becomes the default element namespace
+     * @throws XPathException if the namespace cannot be bound
+     */
+    public void declareInScopeSchema(@Nullable final String prefix, final String namespaceUri, final CompiledSchema schema,
+            final boolean defaultElementNamespace) throws XPathException {
+        if (prefix != null) {
+            declareNamespace(prefix, namespaceUri);
+        }
+        if (defaultElementNamespace) {
+            setDefaultElementNamespace(namespaceUri, null);
+            if (!namespaceUri.isEmpty()) {
+                declareNamespace("", namespaceUri);
+            }
+        }
+        inScopeSchemas = inScopeSchemas.with(namespaceUri, schema);
+    }
+
+    private CompiledSchema loadImportedSchema(final String ns, @Nullable final String[] locationHints) throws XPathException {
+        final DBBroker broker = getBroker();
+        if (broker == null) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0059, "No database available to load a schema for namespace '" + ns + "'");
+        }
+        final SchemaRegistry registry = broker.getBrokerPool().getSchemaRegistry();
+        final StringBuilder failures = new StringBuilder();
+        if (locationHints != null && locationHints.length > 0) {
+            for (final String hint : locationHints) {
+                final String location = resolveSchemaLocation(hint);
+                try {
+                    final CompiledSchema schema = registry.loadForQuery(broker, location);
+                    if (schema.targetNamespaces().contains(ns)) {
+                        return schema;
+                    }
+                    appendFailure(failures, location, "the schema has no components in the namespace");
+                } catch (final SchemaLoadException e) {
+                    appendFailure(failures, location, e.getMessage());
+                }
+            }
+        } else {
+            final java.util.Optional<CompiledSchema> configured = registry.loadedForNamespace(ns);
+            if (configured.isPresent()) {
+                return configured.get();
+            }
+            try {
+                final CompiledSchema schema = registry.loadFromCatalog(broker, ns);
+                if (schema.targetNamespaces().contains(ns)) {
+                    return schema;
+                }
+                appendFailure(failures, "catalog", "the schema has no components in the namespace");
+            } catch (final SchemaLoadException e) {
+                appendFailure(failures, "catalog", e.getMessage());
+            }
+        }
+        throw new XPathException(rootExpression, ErrorCodes.XQST0059,
+                "Unable to load a schema for the target namespace '" + ns + "': " + failures);
+    }
+
+    private static void appendFailure(final StringBuilder failures, final String location, final String reason) {
+        if (!failures.isEmpty()) {
+            failures.append("; ");
+        }
+        failures.append(location).append(": ").append(reason);
+    }
+
+    /** a relative location hint is relative to the module's load path when that is in the database */
+    private String resolveSchemaLocation(final String hint) {
+        if (hint.startsWith("/") || hint.indexOf(':') > 1) {
+            return hint;
+        }
+        final String loadPath = getModuleLoadPath();
+        if (loadPath != null && loadPath.startsWith(XmldbURI.XMLDB_URI_PREFIX)) {
+            return loadPath.endsWith("/") ? loadPath + hint : loadPath + "/" + hint;
+        }
+        return hint;
+    }
+
+    /**
+     * @param docId the id of a document
+     * @return the remembered key of the schema the document was annotated with, or null
+     */
+    public @Nullable SchemaKey getAnnotatingSchema(final int docId) {
+        final it.unimi.dsi.fastutil.ints.Int2ObjectMap<SchemaKey> cache = annotatingSchemas;
+        return cache == null ? null : cache.get(docId);
+    }
+
+    /**
+     * Remember the key of the schema a document was annotated with, for the rest of the execution.
+     *
+     * @param docId the id of a document
+     * @param key the key of the schema
+     */
+    public void setAnnotatingSchema(final int docId, final SchemaKey key) {
+        if (annotatingSchemas == null) {
+            annotatingSchemas = new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>();
+        }
+        annotatingSchemas.put(docId, key);
+    }
+
+    // === End Schema Aware Feature ===
 
     @Override
     public String getModuleLoadPath() {

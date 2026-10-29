@@ -26,7 +26,9 @@ xquery version "3.1";
  :
  : fx:setUp() stores trade.xsd and trade-common.xsd, a collection.xconf configuring the schema type index
  : (with typed values for xs:decimal, xs:date and t:NonNegativeDecimal), trade-1.xml, trade-2.xml and bad.xml into
- : /db/schema-type-test, and trade-1.xml alone (no configuration) as /db/plain/t1.xml. fx:tearDown() removes it all.
+ : /db/schema-type-test, and trade-1.xml alone (no configuration) as /db/plain/t1.xml. It also stores trade-v2.xsd, a
+ : second version of the schema (same target namespace, one extra optional element), as trade.xsd together with
+ : trade-common.xsd into /db/schema-type-test-v2, which no collection is configured with. fx:tearDown() removes it all.
  : Each test module calls them from its own %test:setUp and %test:tearDown functions.
  :
  : The fixture files are read from exist-core's test resources (the single copy shared with the Java tests), from
@@ -38,6 +40,8 @@ declare variable $fx:COLLECTION_NAME := "schema-type-test";
 declare variable $fx:COLLECTION := "/db/" || $fx:COLLECTION_NAME;
 declare variable $fx:CONFIG_COLLECTION := "/db/system/config/db/" || $fx:COLLECTION_NAME;
 declare variable $fx:PLAIN_COLLECTION := "/db/plain";
+declare variable $fx:V2_COLLECTION_NAME := "schema-type-test-v2";
+declare variable $fx:V2_COLLECTION := "/db/" || $fx:V2_COLLECTION_NAME;
 
 (:~ The directory of the fixture files (an absolute path, set by the pom for surefire). :)
 declare variable $fx:FIXTURES as xs:string :=
@@ -74,13 +78,19 @@ declare function fx:setUp() {
         fx:store-fixture($fx:COLLECTION, "trade-2.xml"),
         fx:store-fixture($fx:COLLECTION, "bad.xml")
     )
+    let $v2 := xmldb:create-collection("/db", $fx:V2_COLLECTION_NAME)
+    let $v2-schemas := (
+        fx:store-fixture($fx:V2_COLLECTION, "trade-common.xsd"),
+        fx:store-fixture($fx:V2_COLLECTION, "trade-v2.xsd"),
+        xmldb:rename($fx:V2_COLLECTION, "trade-v2.xsd", "trade.xsd")
+    )
     let $plain := xmldb:create-collection("/db", "plain")
     return
         xmldb:store($fx:PLAIN_COLLECTION, "t1.xml", doc($fx:COLLECTION || "/trade-1.xml"))
 };
 
 declare function fx:tearDown() {
-    for $collection in ($fx:COLLECTION, $fx:PLAIN_COLLECTION, $fx:CONFIG_COLLECTION)
+    for $collection in ($fx:COLLECTION, $fx:PLAIN_COLLECTION, $fx:CONFIG_COLLECTION, $fx:V2_COLLECTION)
     where xmldb:collection-available($collection)
     return
         xmldb:remove($collection)
