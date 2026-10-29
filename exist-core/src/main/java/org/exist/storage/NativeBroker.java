@@ -3041,9 +3041,6 @@ public class NativeBroker implements DBBroker {
         // we assume the caller holds a WRITE_LOCK on sourceDocument#getCollection()
         final Collection sourceCollection = sourceDocument.getCollection();
 
-        if (sourceCollection.getId() != targetCollection.getId()) {
-            checkBeforeStore(sourceDocument, targetCollection, newName);
-        }
         if(!sourceCollection.getPermissionsNoLock().validate(getCurrentSubject(), Permission.WRITE | Permission.EXECUTE)) {
             throw new PermissionDeniedException("Account " + getCurrentSubject().getName() + " have insufficient privileges on source Collection to move resource: " + sourceDocumentUri);
         }
@@ -3056,6 +3053,11 @@ public class NativeBroker implements DBBroker {
             throw new PermissionDeniedException(
                 "The Collection '" + targetCollectionUri + "' has a sub-collection '" + newName + "'; cannot create a Document with the same name!"
             );
+        }
+
+        // only now: the caller is allowed to move the document, so may be told why the target collection rejects it
+        if (sourceCollection.getId() != targetCollection.getId()) {
+            checkBeforeStore(sourceDocument, targetCollection, newName);
         }
 
         final DocumentTrigger trigger = new DocumentTriggers(this, transaction, sourceCollection);
@@ -3339,7 +3341,7 @@ public class NativeBroker implements DBBroker {
      * Before a document is copied or moved into another collection: let the collection's schema type configuration
      * veto it, so that nothing is written for a document the collection would reject.
      */
-    private void checkBeforeStore(final DocumentImpl source, final Collection target, final XmldbURI name) throws IOException {
+    private void checkBeforeStore(final DocumentImpl source, final Collection target, final XmldbURI name) throws IOException, PermissionDeniedException {
         if (source.getResourceType() != DocumentImpl.XML_FILE) {
             return;
         }
@@ -3347,6 +3349,10 @@ public class NativeBroker implements DBBroker {
         final org.exist.xquery.schema.TypeAnnotationProvider.StoreCheck check = provider == null ? null : provider.storeCheck(target, name);
         if (check == null) {
             return;
+        }
+        // the check reports node paths and reasons from the content: only to someone who may read it
+        if (!source.getPermissions().validate(getCurrentSubject(), Permission.READ)) {
+            throw new PermissionDeniedException("Account '" + getCurrentSubject().getName() + "' has insufficient privileges to read '" + source.getURI() + "'.");
         }
         try {
             new org.exist.util.serializer.DOMStreamer(check, check).serialize(source, true);

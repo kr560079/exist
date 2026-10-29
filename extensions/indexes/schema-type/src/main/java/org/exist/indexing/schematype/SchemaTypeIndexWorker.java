@@ -601,7 +601,20 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             if (meta == null || meta.schema().equals(cfg.schema().key())) {
                 return;
             }
-            index.scheduleReindex(collection, cfg.schema().key(), broker.getCurrentSubject());
+            // only once the configuration is committed; if the store is aborted there is nothing to reindex
+            final SchemaKey key = cfg.schema().key();
+            final org.exist.security.Subject storingUser = broker.getCurrentSubject();
+            txn.registerListener(new org.exist.storage.txn.TxnListener() {
+                @Override
+                public void commit() {
+                    index.scheduleReindex(collection, key, storingUser);
+                }
+
+                @Override
+                public void abort() {
+                    // dropped
+                }
+            });
         } catch (final Exception e) {
             LOG.error("Error scheduling the reindex of collection {} after its configuration changed: {}", dataCollectionUri, e.getMessage(), e);
         }
@@ -875,7 +888,9 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 if (broker.getBrokerPool().isShuttingDownOrDown()) {
                     return failures + 1;
                 }
-                try {
+                // a document being updated is locked for write: wait for it rather than racing it
+                try (final org.exist.storage.lock.ManagedDocumentLock ignored =
+                             broker.getBrokerPool().getLockManager().acquireDocumentReadLock(doc.getURI())) {
                     reindexDocument(doc, txn);
                 } catch (final Exception e) {
                     LOG.warn("Skipping document {} in the reindex after a schema change: {}", doc.getURI(), e.getMessage(), e);
@@ -892,8 +907,13 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             }
             try (final Collection child = broker.openCollection(childUri, org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
                 // a descendant with a collection.xconf of its own has its own configuration: not governed by this one
-                if (child != null && configOf(child) == cfg) {
+                if (child == null) {
+                    LOG.warn("Skipping collection {} in the reindex after a schema change: it was removed", childUri);
+                    failures++;
+                } else if (configOf(child) == cfg) {
                     failures += reindexTree(child, cfg, txn);
+                } else {
+                    LOG.info("Skipping collection {} in the reindex after a schema change: it has a configuration of its own", childUri);
                 }
             } catch (final PermissionDeniedException e) {
                 LOG.warn("Skipping collection {} in the reindex after a schema change: {}", childUri, e.getMessage());

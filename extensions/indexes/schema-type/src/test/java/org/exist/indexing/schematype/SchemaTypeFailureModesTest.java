@@ -313,6 +313,46 @@ public class SchemaTypeFailureModesTest {
     }
 
     @Test
+    void callerWithoutAccessGetsPermissionDeniedNotSchemaDetails() throws Exception {
+        configure(XCONF_REJECT);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        store(PLAIN, "bad.xml", fixture("bad.xml"));
+        // the collections are open to everybody, the document is not readable by the guest
+        xquery("sm:chmod(xs:anyURI('/db/st'), 'rwxrwxrwx')");
+        xquery("sm:chmod(xs:anyURI('/db/st-plain'), 'rwxrwxrwx')");
+        xquery("sm:chmod(xs:anyURI('/db/st-plain/bad.xml'), 'rwx------')");
+
+        try (final DBBroker guest = pool.get(Optional.of(pool.getSecurityManager().getGuestSubject()))) {
+            for (final String op : new String[] {
+                    "xmldb:copy-resource('/db/st-plain', 'bad.xml', '/db/st', 'c.xml')",
+                    "xmldb:move('/db/st-plain', '/db/st', 'bad.xml')"}) {
+                final Exception e = assertThrows(Exception.class, () -> pool.getXQueryService().execute(guest, op, null));
+                assertFalse(messages(e).contains("EXSA000"), messages(e));
+                assertTrue(messages(e).toLowerCase().contains("privileges") || messages(e).toLowerCase().contains("permission"), messages(e));
+            }
+        }
+        assertNull(broker.getCollection(ST).getDocument(broker, XmldbURI.create("c.xml")));
+        assertNotNull(broker.getCollection(PLAIN).getDocument(broker, XmldbURI.create("bad.xml")));
+    }
+
+    @Test
+    void storeTimeReindexIsDroppedWhenTheConfigurationStoreAborts() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        modifyXsd();
+        final int scheduledBefore = index().scheduledReindexCount();
+
+        try (final Txn txn = pool.getTransactionManager().beginTransaction();
+             final Collection col = broker.getOrCreateCollection(txn, CONF)) {
+            broker.storeDocument(txn, XmldbURI.create(CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE),
+                    new StringInputSource(XCONF_AUTO.getBytes(StandardCharsets.UTF_8)), MimeType.XML_TYPE, col);
+            // no commit: aborted on close
+        }
+        Thread.sleep(300);
+        assertEquals(scheduledBefore, index().scheduledReindexCount(), "nothing is scheduled for an aborted store");
+    }
+
+    @Test
     void updateBelowTheRootElementIsRejected() throws Exception {
         // the reindex root of a change directly below the root element is the root: the pass starts at the document
         configure(XCONF_REJECT);
