@@ -153,7 +153,8 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
     public void startElement(final Txn transaction, final ElementImpl element, final NodePath path) {
         if (!inPass()) {
             final ReindexMode mode = worker.getMode();
-            if (mode == ReindexMode.STORE) {
+            if (mode == ReindexMode.STORE && worker.currentConfig() != null) {
+                // (the chain of listeners can outlive a configured document: nothing to do for an unconfigured one)
                 flushPending();
                 if (element.getNodeId().getTreeLevel() == 1) {
                     beginPass(PassKind.FULL, element.getNodeId(), null, null);
@@ -228,7 +229,7 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
             }
         } else {
             final ReindexMode mode = worker.getMode();
-            if (mode == ReindexMode.STORE) {
+            if (mode == ReindexMode.STORE && worker.currentConfig() != null) {
                 // an attribute on its own (e.g. a changed value): assign it from its owner's type
                 flushPending();
                 final Seed seed = worker.seedFor(attrib);
