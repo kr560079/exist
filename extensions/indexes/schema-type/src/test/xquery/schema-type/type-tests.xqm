@@ -46,11 +46,18 @@ declare variable $y:PROLOG := '
 (: a party with the globally declared attribute t:role, and a document of a substitution member blocked by its head :)
 declare variable $y:ROLES := <t:trades><t:trade><t:swap/><t:party id="p1" t:role="buyer"/><t:party id="p2"/></t:trade></t:trades>;
 declare variable $y:BLOCKED := <t:blockedSwapMember/>;
+declare variable $y:MEMO := <t:memo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>;
+declare variable $y:ANY := <t:any><t:whatever/></t:any>;
+(: t:any is not allowed in a trade: unassignable :)
+declare variable $y:MISPLACED_ANY := <t:trades><t:trade><t:swap/><t:any/></t:trade></t:trades>;
 
 declare %test:setUp function y:setUp() {
     fx:setUp(),
     xmldb:store($fx:COLLECTION, "roles.xml", $y:ROLES),
-    xmldb:store($fx:COLLECTION, "blocked.xml", $y:BLOCKED)
+    xmldb:store($fx:COLLECTION, "blocked.xml", $y:BLOCKED),
+    xmldb:store($fx:COLLECTION, "memo.xml", $y:MEMO),
+    xmldb:store($fx:COLLECTION, "any.xml", $y:ANY),
+    xmldb:store($fx:COLLECTION, "misplaced-any.xml", $y:MISPLACED_ANY)
 };
 
 declare %test:tearDown function y:tearDown() { fx:tearDown() };
@@ -128,6 +135,76 @@ declare %test:assertEquals(1, 0, 1, 0) function y:document-node-parent-axis() {
     y:eval('count($y:doc//t:swap/ancestor::document-node(schema-element(t:trade)))')
 };
 declare %test:assertTrue function y:document-node-element-type() { y:eval('doc("/db/schema-type-test/blocked.xml") instance of document-node(element(*, t:Swap))') };
+
+(: --- nillable declarations --- :)
+
+declare %test:assertEquals(1) function y:schema-element-nillable-nilled() { y:eval('count(doc("/db/schema-type-test/memo.xml")/schema-element(t:memo))') };
+declare %test:assertEquals(0) function y:nilled-memo-without-q() { y:eval('count(doc("/db/schema-type-test/memo.xml")/element(t:memo, xs:string))') };
+declare %test:assertEquals(1, 0) function y:schema-element-not-nillable-nilled() {
+    (: the nilled t:tradeId is declared nillable locally; the global t:tradeId is not nillable :)
+    y:eval('count($y:doc//element(t:tradeId, xs:string?))'),
+    y:eval('count($y:doc//schema-element(t:tradeId))')
+};
+
+(: --- untyped declarations --- :)
+
+declare %test:assertEquals(1) function y:schema-element-untyped-declaration() { y:eval('count(doc("/db/schema-type-test/any.xml")/schema-element(t:any))') };
+declare %test:assertEquals(1, 0) function y:unassignable-not-schema-element() {
+    (: the misplaced t:any has the default annotation xs:anyType, but no schema assessed it :)
+    y:eval('count(doc("/db/schema-type-test/misplaced-any.xml")//element(t:any, xs:anyType))'),
+    y:eval('count(doc("/db/schema-type-test/misplaced-any.xml")//schema-element(t:any))')
+};
+
+(: --- dynamic checks where only the cardinality is not statically known: element()* passed as T? --- :)
+
+declare %test:assertError("XPTY0004") function y:param-type-cardinality-only() {
+    y:eval('declare function local:all() as element()* { $y:doc//t:fra };
+        declare function local:f($p as element(*, t:Swap)?) { 1 };
+        local:f(local:all())')
+};
+declare %test:assertError("XPTY0004") function y:param-schema-element-cardinality-only() {
+    y:eval('declare function local:all() as element()* { $y:doc//t:fra };
+        declare function local:f($p as schema-element(t:swap)?) { 1 };
+        local:f(local:all())')
+};
+declare %test:assertError("XPTY0004") function y:param-name-cardinality-only() {
+    y:eval('declare function local:all() as element()* { $y:doc//t:fra };
+        declare function local:f($p as element(t:swap)?) { 1 };
+        local:f(local:all())')
+};
+declare %test:assertEquals(1) function y:param-type-cardinality-only-match() {
+    y:eval('declare function local:all() as element()* { $y:doc//t:swap };
+        declare function local:f($p as element(*, t:Swap)?) { 1 };
+        local:f(local:all())')
+};
+declare %test:assertError("XPTY0004") function y:return-type-cardinality-only() {
+    y:eval('declare function local:all() as element()* { $y:doc//t:fra };
+        declare function local:g() as element(*, t:Swap)? { local:all() };
+        local:g()')
+};
+declare %test:assertError("XPTY0004") function y:let-type-cardinality-only() {
+    y:eval('declare function local:all() as element()* { $y:doc//t:fra };
+        let $x as element(*, t:Swap)? := local:all() return 1')
+};
+
+(: --- backward compatibility: untyped and anyType tests accept unannotated nodes --- :)
+
+declare %test:assertEquals(4, 4) function y:param-any-type-accepts-unannotated() {
+    for $nodes in ('<t:trade xmlns:t="urn:example:trade"/>', 'doc("/db/plain/t1.xml")//*:trade[1]')
+    return
+        y:eval('
+            declare function local:a($p as element(*, xs:anyType)) { 1 };
+            declare function local:b($p as element(t:trade, xs:anyType)) { 1 };
+            declare function local:c($p as element(*, xs:untyped)) { 1 };
+            declare function local:d($p as element(t:trade)) { 1 };
+            let $n := ' || $nodes || '
+            return local:a($n) + local:b($n) + local:c($n) + local:d($n)')
+};
+declare %test:assertEquals(2) function y:param-document-node-accepts-unannotated() {
+    y:eval('
+        declare function local:d($p as document-node(element(t:trades))) { 1 };
+        local:d(document { <t:trades xmlns:t="urn:example:trade"/> }) + local:d(doc("/db/plain/t1.xml"))')
+};
 
 (: --- attribute(N, T) and schema-attribute(N) --- :)
 

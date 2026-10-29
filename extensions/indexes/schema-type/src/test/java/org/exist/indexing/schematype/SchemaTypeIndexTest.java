@@ -127,7 +127,7 @@ public class SchemaTypeIndexTest {
         assertEquals(Type.STRING, annotationOf("/t:trade/t:tradeId").typeCode());
 
         final TypeAnnotation nilled = annotationIn("/db/st/trades.xml", "/t:trades/t:trade[1]/t:tradeId");
-        assertEquals(new TypeAnnotation(Type.STRING, true), nilled);
+        assertEquals(TypeAnnotation.assessed(Type.STRING, true), nilled);
         assertEquals(Type.ID, annotationIn("/db/st/trades.xml", "/t:trades/t:trade[1]/t:party/@id").typeCode());
         assertEquals(DocStatus.TYPED, docMeta("t1.xml").status());
     }

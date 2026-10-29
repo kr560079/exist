@@ -129,7 +129,7 @@ public final class TypeAnnotations {
         if (typeCode >= UserTypeRegistry.USER_TYPE_BASE && node instanceof NodeProxy proxy) {
             checkSameSchema(ctx, proxy, annotation, typeCode);
         }
-        if (requireAnnotation && isUnannotated(annotation)) {
+        if (requireAnnotation && !annotation.assessed()) {
             return false;
         }
         return matches(annotation, typeCode, nillable);
@@ -155,15 +155,6 @@ public final class TypeAnnotations {
             return matches(ctx, new NodeProxy(stored), typeCode, nillable, requireAnnotation);
         }
         return !requireAnnotation && matches(annotationOf(ctx, node), typeCode, nillable);
-    }
-
-    /**
-     * The shared default annotations stand for nodes without a stored annotation: the provider returns new
-     * instances for stored ones, so identity tells them apart.
-     */
-    private static boolean isUnannotated(final TypeAnnotation annotation) {
-        return annotation == TypeAnnotation.UNTYPED || annotation == TypeAnnotation.ANY_TYPE
-                || annotation == TypeAnnotation.UNTYPED_ATOMIC;
     }
 
     /**
@@ -195,7 +186,7 @@ public final class TypeAnnotations {
         final SchemaKey nodeSchema;
         if (annotated != null) {
             nodeSchema = annotated.schema();
-        } else if (annotation == TypeAnnotation.UNTYPED) {
+        } else if (TypeAnnotation.UNTYPED.equals(annotation)) {
             // no schema: the collection of the node is not configured
             return;
         } else {

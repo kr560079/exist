@@ -85,6 +85,11 @@
         </xs:simpleContent>
     </xs:complexType>
 
+    <!-- global declarations for schema-element(): nillable, not nillable (the local t:trade/t:tradeId is), untyped -->
+    <xs:element name="memo" type="xs:string" nillable="true"/>
+    <xs:element name="tradeId" type="xs:string"/>
+    <xs:element name="any"/>
+
     <!-- a global attribute declaration (schema-attribute) -->
     <xs:attribute name="role" type="xs:NCName"/>
 

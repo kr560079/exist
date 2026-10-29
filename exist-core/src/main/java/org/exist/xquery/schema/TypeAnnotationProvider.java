@@ -54,8 +54,7 @@ public interface TypeAnnotationProvider {
      * @param node the node
      * @return null if the collection of the node has no schema; {@link TypeAnnotation#ANY_TYPE} (elements)
      *         or {@link TypeAnnotation#UNTYPED_ATOMIC} (attributes) if it has a schema but the node is not
-     *         annotated (those very instances: an unannotated node is told apart by identity); otherwise the
-     *         stored annotation, as a new instance
+     *         annotated (not {@link TypeAnnotation#assessed() assessed}); otherwise the stored annotation, assessed
      * @throws XPathException {@code EXSA0002} if the schema is unavailable, {@code EXSA0003} if the index
      *         is stale for the document of the node
      */

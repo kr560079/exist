@@ -318,7 +318,20 @@ public abstract class Function extends PathExpr {
             }
         }
 
-        if (typeMatches || context.isBackwardsCompatible()) {
+        if (context.isBackwardsCompatible()) {
+            return argument;
+        }
+        if (typeMatches) {
+            // only the cardinality could not be proven statically: the items still need their name and
+            // type annotation checked
+            if (argType.getNodeName() != null) {
+                argument = new DynamicNameCheck(context,
+                        new NameTest(argType.getPrimaryType(), argType.getNodeName()), argument);
+            }
+            // === Schema Aware Feature ===
+            if (DynamicAnnotationCheck.isNeeded(argType)) {
+                argument = new DynamicAnnotationCheck(context, argType, argument);
+            }
             return argument;
         }
         if (argType.getNodeName() != null) {

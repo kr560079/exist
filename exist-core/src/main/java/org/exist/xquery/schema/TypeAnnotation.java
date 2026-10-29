@@ -24,19 +24,34 @@ package org.exist.xquery.schema;
 import org.exist.xquery.value.Type;
 
 /**
- * The type annotation of a node: the type code of its type and whether it is nilled.
+ * The type annotation of a node: the type code of its type, whether it is nilled, and whether a schema assessed it.
  *
  * @param typeCode the {@link Type} code of the annotated type, built-in or user-defined
  * @param nilled   true if the node is nilled ({@code xsi:nil="true"} on an element whose declaration is nillable)
+ * @param assessed true if the annotation was assigned by schema assessment (stored in the schema type index); false
+ *                 for the default annotation of a node no schema assessed: an in-memory node, a node of a collection
+ *                 without a schema, or a stored node no type could be assigned to. Only assessed nodes are instances
+ *                 of schema declarations ({@code schema-element(N)}, {@code schema-attribute(N)}).
  */
-public record TypeAnnotation(int typeCode, boolean nilled) {
+public record TypeAnnotation(int typeCode, boolean nilled, boolean assessed) {
 
     /** An element of a collection without a schema. */
-    public static final TypeAnnotation UNTYPED = new TypeAnnotation(Type.UNTYPED, false);
+    public static final TypeAnnotation UNTYPED = new TypeAnnotation(Type.UNTYPED, false, false);
 
     /** An element of a collection with a schema which carries no stored annotation. */
-    public static final TypeAnnotation ANY_TYPE = new TypeAnnotation(Type.ANY_TYPE, false);
+    public static final TypeAnnotation ANY_TYPE = new TypeAnnotation(Type.ANY_TYPE, false, false);
 
     /** An attribute which carries no stored annotation. */
-    public static final TypeAnnotation UNTYPED_ATOMIC = new TypeAnnotation(Type.UNTYPED_ATOMIC, false);
+    public static final TypeAnnotation UNTYPED_ATOMIC = new TypeAnnotation(Type.UNTYPED_ATOMIC, false, false);
+
+    /**
+     * An annotation assigned by schema assessment.
+     *
+     * @param typeCode the {@link Type} code of the annotated type
+     * @param nilled   true if the node is nilled
+     * @return the annotation
+     */
+    public static TypeAnnotation assessed(final int typeCode, final boolean nilled) {
+        return new TypeAnnotation(typeCode, nilled, true);
+    }
 }

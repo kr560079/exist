@@ -665,7 +665,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 return unannotated;
             }
             final int code = index.table(doc.getCollection().getId(), cfg.schema()).codeOf(stored.localTypeId());
-            return code < 0 ? unannotated : new TypeAnnotation(code, stored.nilled());
+            return code < 0 ? unannotated : TypeAnnotation.assessed(code, stored.nilled());
         } catch (final IOException e) {
             throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
