@@ -122,18 +122,141 @@ public class IndexInfo {
     }
 
     private ContentHandler tee(final ContentHandler base) {
-        final Object primary = base;
-        final Object secondary = tap;
-        return (ContentHandler) java.lang.reflect.Proxy.newProxyInstance(IndexInfo.class.getClassLoader(),
-                new Class<?>[] {ContentHandler.class, LexicalHandler.class}, (proxy, method, args) -> {
-                    try {
-                        final Object result = method.invoke(primary, args);
-                        method.invoke(secondary, args);
-                        return result;
-                    } catch (final java.lang.reflect.InvocationTargetException e) {
-                        throw e.getCause();
-                    }
-                });
+        return new Tee(base, (LexicalHandler) base, tap, (LexicalHandler) tap);
+    }
+
+    /**
+     * Sends every SAX event to the primary handler, then to the tap (called directly: this runs for every event
+     * of every document validated into a collection with a tap).
+     */
+    private static final class Tee implements ContentHandler, LexicalHandler {
+        private final ContentHandler primary;
+        private final LexicalHandler primaryLexical;
+        private final ContentHandler secondary;
+        private final LexicalHandler secondaryLexical;
+
+        Tee(final ContentHandler primary, final LexicalHandler primaryLexical, final ContentHandler secondary,
+                final LexicalHandler secondaryLexical) {
+            this.primary = primary;
+            this.primaryLexical = primaryLexical;
+            this.secondary = secondary;
+            this.secondaryLexical = secondaryLexical;
+        }
+
+        @Override
+        public void setDocumentLocator(final org.xml.sax.Locator locator) {
+            primary.setDocumentLocator(locator);
+            secondary.setDocumentLocator(locator);
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            primary.startDocument();
+            secondary.startDocument();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            primary.endDocument();
+            secondary.endDocument();
+        }
+
+        @Override
+        public void declaration(final String version, final String encoding, final String standalone) throws SAXException {
+            primary.declaration(version, encoding, standalone);
+            secondary.declaration(version, encoding, standalone);
+        }
+
+        @Override
+        public void startPrefixMapping(final String prefix, final String uri) throws SAXException {
+            primary.startPrefixMapping(prefix, uri);
+            secondary.startPrefixMapping(prefix, uri);
+        }
+
+        @Override
+        public void endPrefixMapping(final String prefix) throws SAXException {
+            primary.endPrefixMapping(prefix);
+            secondary.endPrefixMapping(prefix);
+        }
+
+        @Override
+        public void startElement(final String uri, final String localName, final String qName,
+                final org.xml.sax.Attributes atts) throws SAXException {
+            primary.startElement(uri, localName, qName, atts);
+            secondary.startElement(uri, localName, qName, atts);
+        }
+
+        @Override
+        public void endElement(final String uri, final String localName, final String qName) throws SAXException {
+            primary.endElement(uri, localName, qName);
+            secondary.endElement(uri, localName, qName);
+        }
+
+        @Override
+        public void characters(final char[] ch, final int start, final int length) throws SAXException {
+            primary.characters(ch, start, length);
+            secondary.characters(ch, start, length);
+        }
+
+        @Override
+        public void ignorableWhitespace(final char[] ch, final int start, final int length) throws SAXException {
+            primary.ignorableWhitespace(ch, start, length);
+            secondary.ignorableWhitespace(ch, start, length);
+        }
+
+        @Override
+        public void processingInstruction(final String target, final String data) throws SAXException {
+            primary.processingInstruction(target, data);
+            secondary.processingInstruction(target, data);
+        }
+
+        @Override
+        public void skippedEntity(final String name) throws SAXException {
+            primary.skippedEntity(name);
+            secondary.skippedEntity(name);
+        }
+
+        @Override
+        public void startDTD(final String name, final String publicId, final String systemId) throws SAXException {
+            primaryLexical.startDTD(name, publicId, systemId);
+            secondaryLexical.startDTD(name, publicId, systemId);
+        }
+
+        @Override
+        public void endDTD() throws SAXException {
+            primaryLexical.endDTD();
+            secondaryLexical.endDTD();
+        }
+
+        @Override
+        public void startEntity(final String name) throws SAXException {
+            primaryLexical.startEntity(name);
+            secondaryLexical.startEntity(name);
+        }
+
+        @Override
+        public void endEntity(final String name) throws SAXException {
+            primaryLexical.endEntity(name);
+            secondaryLexical.endEntity(name);
+        }
+
+        @Override
+        public void startCDATA() throws SAXException {
+            primaryLexical.startCDATA();
+            secondaryLexical.startCDATA();
+        }
+
+        @Override
+        public void endCDATA() throws SAXException {
+            primaryLexical.endCDATA();
+            secondaryLexical.endCDATA();
+        }
+
+        @Override
+        public void comment(final char[] ch, final int start, final int length) throws SAXException {
+            primaryLexical.comment(ch, start, length);
+            secondaryLexical.comment(ch, start, length);
+        }
     }
 
     /**
