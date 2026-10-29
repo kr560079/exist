@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -234,11 +235,29 @@ final class TypeIndexStore {
      */
     NodeSet nodesOfType(final DocumentSet docs, final short[] localTypeIds) throws IOException {
         final NodeSet result = new NewArrayNodeSet();
+        if (docs.getDocumentCount() == 0) {
+            return result;
+        }
+        // the keys are (localTypeId, docId): look up the documents' keys, or scan the range of their ids only
+        final int[] docIds = new int[docs.getDocumentCount()];
+        int n = 0;
+        for (final Iterator<DocumentImpl> i = docs.getDocumentIterator(); i.hasNext(); ) {
+            docIds[n++] = i.next().getDocId();
+        }
+        Arrays.sort(docIds, 0, n);
         for (final short localTypeId : localTypeIds) {
+            if (n <= POINT_LOOKUP_DOCS) {
+                for (int i = 0; i < n; i++) {
+                    addAll(result, docs.getDoc(docIds[i]), get(membersKey(localTypeId, docIds[i])));
+                }
+                continue;
+            }
             final byte[] prefix = new byte[3];
             prefix[0] = TYPE_MEMBERS;
             ByteConversion.shortToByteH(localTypeId, prefix, 1);
-            for (final byte[] key : keys(prefix, prefix)) {
+            final byte[] start = membersKey(localTypeId, docIds[0]);
+            final byte[] end = docIds[n - 1] == Integer.MAX_VALUE ? successor(prefix) : membersKey(localTypeId, docIds[n - 1] + 1);
+            for (final byte[] key : keysBetween(start, end, prefix)) {
                 final DocumentImpl doc = docs.getDoc(ByteConversion.byteToIntH(key, key.length - 4));
                 if (doc != null) {
                     addAll(result, doc, get(key));
@@ -247,6 +266,9 @@ final class TypeIndexStore {
         }
         return result;
     }
+
+    /** up to this many documents, {@link #nodesOfType} looks up each document's key instead of scanning a range */
+    private static final int POINT_LOOKUP_DOCS = 16;
 
     /**
      * @return the nodes of the given documents annotated with one of the local types whose typed value key lies in
@@ -513,8 +535,12 @@ final class TypeIndexStore {
      * @return the keys {@code >= start} which start with {@code prefix}
      */
     private List<byte[]> keys(final byte[] start, final byte[] prefix) throws IOException {
+        return keysBetween(start, successor(prefix), prefix);
+    }
+
+    /** the keys from start (inclusive) to upper (exclusive, null for no bound) which start with the prefix */
+    private List<byte[]> keysBetween(final byte[] start, @Nullable final byte[] upper, final byte[] prefix) throws IOException {
         accesses.incrementAndGet();
-        final byte[] upper = successor(prefix);
         final IndexQuery query = upper == null
                 ? new IndexQuery(IndexQuery.GEQ, new Value(start))
                 : new IndexQuery(IndexQuery.RANGE, new Value(start), new Value(upper));

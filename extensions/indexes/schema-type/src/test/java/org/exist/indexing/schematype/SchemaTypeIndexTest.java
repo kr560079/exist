@@ -209,6 +209,35 @@ public class SchemaTypeIndexTest {
     }
 
     @Test
+    void nodesOfTypeIsBoundedByTheDocuments() throws Exception {
+        final int count = 20;
+        try {
+            for (int i = 0; i < count; i++) {
+                store(ST, "many-" + i + ".xml", "<t:trade xmlns:t='" + T_NS + "'><t:swap/></t:trade>");
+            }
+            final short[] swap = new short[] {localTypeId(code("Swap"))};
+            // few documents: one lookup per document and type
+            final long before = index().store().accessCount();
+            assertEquals(1, index().store().nodesOfType(docs("many-5.xml"), swap).getLength());
+            assertEquals(swap.length, index().store().accessCount() - before);
+            // more: a scan of the range of their ids, which leaves out the documents not asked for
+            final String[] some = new String[count - 3];
+            for (int i = 3; i < count; i++) {
+                some[i - 3] = "many-" + i + ".xml";
+            }
+            assertEquals(count - 3, index().store().nodesOfType(docs(some), swap).getLength());
+            final String[] all = java.util.Arrays.copyOf(some, some.length + 1);
+            all[some.length] = "trades.xml";
+            assertEquals(count - 3 + nodesOfType("trades.xml", code("Swap"), false).getLength(),
+                    index().store().nodesOfType(docs(all), swap).getLength());
+        } finally {
+            for (int i = 0; i < count; i++) {
+                query("xmldb:remove('/db/st', 'many-" + i + ".xml')");
+            }
+        }
+    }
+
+    @Test
     void typedValuesWrittenOnlyForListedTypes() throws Exception {
         // listed: t:NonNegativeDecimal and xs:decimal
         assertEquals(1, typedValues("t1.xml", code("NonNegativeDecimal"), "100").getLength());

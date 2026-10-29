@@ -33,8 +33,14 @@ xquery version "3.1";
  :
  : The fixture files are read from exist-core's test resources (the single copy shared with the Java tests), from
  : the directory in the system property schema-type.fixtures.dir which this module's pom sets for surefire.
+ :
+ : The module also has the helpers of the optimizer tests (in this module's namespace, prefix fx): fx:same($prolog,
+ : $expr) and fx:same($query) evaluate a query optimized and unoptimized and compare the items; fx:same-error the
+ : error both raise; fx:uses-index($query, $index) whether evaluating it reports use of an index type (system:trace).
  :)
 module namespace fx="http://exist-db.org/xquery/test/schema-type/fixtures";
+
+declare namespace prof="http://exist-db.org/xquery/profiling";
 
 declare variable $fx:COLLECTION_NAME := "schema-type-test";
 declare variable $fx:COLLECTION := "/db/" || $fx:COLLECTION_NAME;
@@ -94,4 +100,73 @@ declare function fx:tearDown() {
     where xmldb:collection-available($collection)
     return
         xmldb:remove($collection)
+};
+
+(: --- differential optimizer helpers (shared by the optimizer test modules) ---
+ : The functions are in this module's namespace, http://exist-db.org/xquery/test/schema-type/fixtures (prefix fx by
+ : convention). A query is evaluated with util:eval, once as compiled (optimized) and once with the optimizer disabled
+ : by `declare option exist:optimize "enable=no";`, which goes after the prolog's imports.
+ :)
+
+(:~ evaluate a query; a dynamic error gives the string "error:" followed by its code :)
+declare %private function fx:run($query as xs:string) {
+    try {
+        util:eval($query)
+    } catch * {
+        "error:" || string($err:code)
+    }
+};
+
+declare %private function fx:identical($a as item()*, $b as item()*) as xs:boolean {
+    count($a) eq count($b)
+    and deep-equal($a, $b)
+    and (every $i in 1 to count($a) satisfies
+            (if ($a[$i] instance of node() and $b[$i] instance of node()) then $a[$i] is $b[$i] else true()))
+};
+
+declare %private function fx:is-error($result as item()*) as xs:boolean {
+    count($result) eq 1 and $result instance of xs:string and starts-with($result, "error:")
+};
+
+(:~
+ : true if a query gives the same items (the same nodes, in the same order) optimized and unoptimized, and does not
+ : raise an error
+ :
+ : @param $prolog the prolog of the query: imports and declarations
+ : @param $expr   the query body
+ :)
+declare function fx:same($prolog as xs:string, $expr as xs:string) as xs:boolean {
+    let $optimized := fx:run($prolog || $expr)
+    let $unoptimized := fx:run($prolog || ' declare option exist:optimize "enable=no"; ' || $expr)
+    return
+        not(fx:is-error($optimized)) and fx:identical($optimized, $unoptimized)
+};
+
+(:~ as fx:same#2, for a query without prolog :)
+declare function fx:same($query as xs:string) as xs:boolean {
+    fx:same('', $query)
+};
+
+(:~ the code of the error a query raises both optimized and unoptimized, or "different" / "no error" :)
+declare function fx:same-error($prolog as xs:string, $expr as xs:string) as xs:string {
+    let $optimized := fx:run($prolog || $expr)
+    let $unoptimized := fx:run($prolog || ' declare option exist:optimize "enable=no"; ' || $expr)
+    return
+        if (not(fx:is-error($optimized))) then "no error"
+        else if ($optimized ne $unoptimized) then "different"
+        else substring-after($optimized, "error:")
+};
+
+(:~
+ : true if evaluating a query reports use of an index of the type (as in the type attribute of the index elements
+ : of system:trace(), e.g. "schema-type" or "range")
+ :)
+declare function fx:uses-index($query as xs:string, $index as xs:string) as xs:boolean {
+    let $cleared := system:clear-trace()
+    let $enabled := if (empty($cleared)) then system:enable-tracing(true(), false()) else ()
+    let $count := if (empty($enabled)) then count(fx:run($query)) else -1
+    let $trace := if ($count ge 0) then system:trace() else ()
+    let $disabled := if (exists($trace)) then system:enable-tracing(false()) else ()
+    return
+        empty($disabled) and exists($trace//prof:index[@type = $index])
 };

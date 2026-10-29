@@ -81,6 +81,49 @@ public class LocationStep extends Step {
     // Cache for the current NodeTest type
     private Integer nodeTestType = null;
 
+    /** an index lookup an index's query rewriter installed, see {@link #setIndexLookup(IndexLookup)} */
+    @Nullable private IndexLookup indexLookup = null;
+
+    /**
+     * A lookup of the candidate nodes of a step in an index, which a {@link QueryRewriter} may install on a
+     * descendant, descendant-or-self or descendant-attribute step over stored nodes. It is used unless the step
+     * was given preloaded data.
+     */
+    @FunctionalInterface
+    public interface IndexLookup {
+
+        /**
+         * Find the nodes the step selects from a context set.
+         *
+         * @param step       the step
+         * @param contextSet the stored context nodes
+         * @return the nodes the step selects (before its predicates), carrying the step's context if it has a
+         *     context id, in document order and without duplicates; or null if the index cannot answer, and the
+         *     step is evaluated as usual
+         * @throws XPathException as the usual evaluation of the step would
+         */
+        @Nullable NodeSet lookup(LocationStep step, NodeSet contextSet) throws XPathException;
+    }
+
+    /**
+     * Install an index lookup, see {@link IndexLookup}.
+     *
+     * @param lookup the lookup, or null to remove it
+     */
+    public void setIndexLookup(@Nullable final IndexLookup lookup) {
+        this.indexLookup = lookup;
+    }
+
+    /** @return the installed index lookup, or null */
+    public @Nullable IndexLookup getIndexLookup() {
+        return indexLookup;
+    }
+
+    /** @return the context id of the step (the id its selected nodes carry their context nodes under) */
+    public int getContextId() {
+        return contextId;
+    }
+
     /**
      * Creates a new instance.
      *
@@ -310,7 +353,7 @@ public class LocationStep extends Step {
 
                 if (!stepTest.isWildcardTest() &&
                         !contextStepTest.isWildcardTest() &&
-                        !contextStepTest.equals(stepTest)) {
+                        !sameName(contextStepTest, stepTest)) {
                     // return empty sequence
                     contextInfo.setStaticType(Type.EMPTY_SEQUENCE);
                     staticReturnType = Type.EMPTY_SEQUENCE;
@@ -347,6 +390,18 @@ public class LocationStep extends Step {
         // argument), so deferring this test to getDependencies() is unreliable.
         this.initialStep = parent != null && parent.getSubExpressionCount() > 0
                 && parent.getSubExpression(0) == this;
+    }
+
+    /**
+     * Whether two named tests test the same name for the same kind of node: a typed test with a name
+     * ({@code element(N, T)}) is not a {@link NameTest}, but names the same nodes as one.
+     */
+    private static boolean sameName(final NodeTest a, final NodeTest b) {
+        if (a instanceof TypedNodeTest || b instanceof TypedNodeTest) {
+            return a.getType() == b.getType() && a.getName() != null && b.getName() != null
+                    && a.getName().equals(b.getName());
+        }
+        return a.equals(b);
     }
 
     @Override
@@ -445,6 +500,12 @@ public class LocationStep extends Step {
                 if (test instanceof TypedNodeTest && result instanceof VirtualNodeSet virtualNodes) {
                     // realize now, so that a type annotation which cannot be determined is reported here
                     virtualNodes.getLength();
+                } else if (contextSequence.isPersistentSet() && !(result instanceof VirtualNodeSet)
+                        && (preloadedData || !test.isWildcardTest())
+                        && (test instanceof TypedNodeTest || test instanceof FailTest)) {
+                    // the nodes were preloaded (e.g. by a comparison answered from an index) or found by the name
+                    // in the structural index: neither knows of types
+                    result = filterByTest(result.toNodeSet(), !preloadedData);
                 }
             } catch (final XPathException e) {
                 if (e.getLine() <= 0) {
@@ -477,6 +538,40 @@ public class LocationStep extends Step {
         // actualReturnType = result.getItemType();
 
         return result;
+    }
+
+    /**
+     * Keep the nodes which pass a typed (or failing) test.
+     *
+     * @param nodes      stored nodes
+     * @param nameTested true if the nodes are known to have the kind and the name of the test
+     * @return the nodes which pass
+     */
+    private NodeSet filterByTest(final NodeSet nodes, final boolean nameTested) {
+        if (nodes.isEmpty()) {
+            return nodes;
+        }
+        final NewArrayNodeSet filtered = new NewArrayNodeSet(nodes.getItemCount());
+        for (final NodeProxy p : nodes) {
+            final boolean matches = nameTested && test instanceof TypedNodeTest typed
+                    ? typed.matchesType(p) : test.matches(p);
+            if (matches) {
+                filtered.add(p);
+            }
+        }
+        return filtered;
+    }
+
+    /**
+     * Ask the installed index lookup for the nodes the step selects.
+     *
+     * @return the nodes, or null to evaluate the step as usual
+     */
+    private @Nullable NodeSet lookupInIndex(final NodeSet contextSet) throws XPathException {
+        if (indexLookup == null || preloadedData) {
+            return null;
+        }
+        return indexLookup.lookup(this, contextSet);
     }
 
     // Avoid unnecessary tests (these should be detected by the parser)
@@ -659,6 +754,12 @@ public class LocationStep extends Step {
             }
         }
         final NodeSet contextSet = contextSequence.toNodeSet();
+        if (axis == Constants.DESCENDANT_ATTRIBUTE_AXIS) {
+            final NodeSet fromIndex = lookupInIndex(contextSet);
+            if (fromIndex != null) {
+                return fromIndex;
+            }
+        }
         if (!hasPreloadedData() && test.isWildcardTest()) {
             final NodeSet result = new VirtualNodeSet(context.getBroker(), axis, test, contextId, contextSet);
             ((VirtualNodeSet) result).setInPredicate(Expression.NO_CONTEXT_ID != contextId);
@@ -801,6 +902,10 @@ public class LocationStep extends Step {
         }
 
         final NodeSet contextSet = contextSequence.toNodeSet();
+        final NodeSet fromIndex = lookupInIndex(contextSet);
+        if (fromIndex != null) {
+            return fromIndex;
+        }
         // TODO : understand this. I guess comments should be treated in a
         // similar way ? -pb
         if ((!hasPreloadedData() && test.isWildcardTest())
@@ -965,7 +1070,10 @@ public class LocationStep extends Step {
      */
     private Sequence getPrecedingOrFollowing(final XQueryContext context, final Sequence contextSequence)
             throws XPathException {
-        final int position = computeLimit();
+        // the structural index answers a typed test with a name by the name only, and the nodes are filtered by type
+        // afterwards: a position cannot be applied while selecting them
+        final int position = test instanceof TypedNodeTest && !test.isWildcardTest() && contextSequence.isPersistentSet()
+                ? -1 : computeLimit();
 
         // process an in-memory node set
         if (!contextSequence.isPersistentSet()) {

@@ -41,9 +41,11 @@ import javax.xml.stream.XMLStreamReader;
  * {@code T?} for nillable element tests. With the kind {@link Type#DOCUMENT} it tests the document element of
  * a document node: {@code document-node(element(N, T))}.
  *
- * <p>The test is always reported as a wildcard test without a name, so that a location step
- * evaluates it node by node instead of looking the name up in the structural index, which
- * knows nothing of types.</p>
+ * <p>An element or attribute test with a name reports that name and is not a wildcard test: a location step
+ * looks the name up in the structural index, which knows nothing of types, and then keeps the nodes whose type
+ * annotation matches ({@link #matchesType(NodeProxy)}). A test without a name, and a document node test, are
+ * wildcard tests without a name, evaluated node by node (or answered from the schema type index by its query
+ * rewriter).</p>
  */
 public class TypedNodeTest extends TypeTest {
 
@@ -105,10 +107,19 @@ public class TypedNodeTest extends TypeTest {
 
     @Override
     public boolean matches(final NodeProxy proxy) {
-        if (!super.matches(proxy)) {
-            return false;
+        final Node node;
+        if (proxy.getNodeType() == NodeProxy.UNKNOWN_NODE_TYPE) {
+            // e.g. a node found in a value index: its kind is that of the stored node
+            node = proxy.getNode();
+            if (!super.matches(node)) {
+                return false;
+            }
+        } else {
+            if (!super.matches(proxy)) {
+                return false;
+            }
+            node = proxy.getNode();
         }
-        final Node node = proxy.getNode();
         if (node == null || !matchesName(node)) {
             return false;
         }
@@ -151,14 +162,50 @@ public class TypedNodeTest extends TypeTest {
                 && Type.subTypeOf(nodeType == Type.ATTRIBUTE ? Type.UNTYPED_ATOMIC : Type.UNTYPED, typeCode);
     }
 
+    /** @return the name of the test, or null for a test of any name and for a document node test */
     @Override
-    public QName getName() {
-        return null;
+    public @Nullable QName getName() {
+        return nameTest == null || nodeType == Type.DOCUMENT ? null : nameTest.getName();
     }
 
     @Override
     public boolean isWildcardTest() {
-        return true;
+        return getName() == null;
+    }
+
+    /** @return the {@link Type} code the type annotation of a matching node must be a subtype of */
+    public int getTypeCode() {
+        return typeCode;
+    }
+
+    /** @return true if a nilled node may match */
+    public boolean isNillable() {
+        return nillable;
+    }
+
+    /** @return true if a node without a stored type annotation never matches (schema-element, schema-attribute) */
+    public boolean isAnnotationRequired() {
+        return requiresAnnotation();
+    }
+
+    /**
+     * Test the type annotation (and the nilled property) of a stored element or attribute already known to have the
+     * right kind and name, e.g. found by the name in the structural index.
+     *
+     * @param proxy an element or attribute
+     * @return true if its type annotation matches
+     * @throws AnnotationLookupException if the annotation cannot be determined
+     */
+    public boolean matchesType(final NodeProxy proxy) {
+        if (nodeType == Type.DOCUMENT) {
+            return matches(proxy);
+        }
+        try {
+            return TypeAnnotations.matches(context, proxy, typeCode, nillable, requiresAnnotation());
+        } catch (final XPathException e) {
+            // NodeTest#matches cannot throw it: LocationStep unwraps it
+            throw new AnnotationLookupException(e);
+        }
     }
 
     /** test the type annotation of an element or attribute (the document element of a document node) */

@@ -303,6 +303,12 @@ public class RangeQueryRewriter extends QueryRewriter {
                 return null;
             }
             NodeTest test = step.getTest();
+            if (test.isWildcardTest() && (test instanceof TypedNodeTest || test instanceof FailTest)) {
+                // element(*, T), schema-element(N), a test which never matches: not a name, and on the self axis
+                // not transparent either -- a path through it cannot be answered by a range lookup without
+                // dropping the test
+                return null;
+            }
             if (test.isWildcardTest() && step.getAxis() == Constants.SELF_AXIS) {
                 continue;
             }

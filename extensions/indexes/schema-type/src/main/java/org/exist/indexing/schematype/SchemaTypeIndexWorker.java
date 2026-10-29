@@ -590,7 +590,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
 
     @Override
     public @Nullable QueryRewriter getQueryRewriter(final XQueryContext context) {
-        return null;
+        return new SchemaTypeQueryRewriter(context);
     }
 
     // --- TypeAnnotationProvider ---
@@ -739,6 +739,72 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             }
         } catch (final IOException e) {
             throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
+    /**
+     * The candidate nodes of a typed step answered from the index: the nodes of the documents annotated with the type
+     * or a type derived from it. The index can answer only if every document is in a collection with a usable schema
+     * and its entries are current, and only for a user-defined type of the collection's schema; otherwise this
+     * returns null and the caller evaluates the step as usual, which raises the errors ({@code EXSA0001},
+     * {@code EXSA0002}, {@code EXSA0003}) the step raises.
+     *
+     * @param docs     the documents
+     * @param typeCode the {@link Type} code of the type
+     * @param nodeKind {@link Type#ELEMENT} or {@link Type#ATTRIBUTE}
+     * @return the nodes, in document order, or null if the index cannot answer
+     * @throws XPathException if the index cannot be read
+     */
+    @Nullable NodeSet candidatesOfType(final DocumentSet docs, final int typeCode, final int nodeKind) throws XPathException {
+        final UserDefinedType requested = typeCode >= UserTypeRegistry.USER_TYPE_BASE ? UserTypeRegistry.get(typeCode) : null;
+        // the documents by collection, in one pass
+        final Map<Integer, DefaultDocumentSet> docsByCollection = new LinkedHashMap<>();
+        final Map<Integer, Collection> collections = new HashMap<>();
+        for (final Iterator<DocumentImpl> i = docs.getDocumentIterator(); i.hasNext(); ) {
+            final DocumentImpl doc = i.next();
+            final Collection collection = doc.getCollection();
+            if (collection == null) {
+                return null;
+            }
+            collections.putIfAbsent(collection.getId(), collection);
+            docsByCollection.computeIfAbsent(collection.getId(), k -> new DefaultDocumentSet()).add(doc);
+        }
+        final List<NodeSet> found = new ArrayList<>();
+        try {
+            for (final Map.Entry<Integer, DefaultDocumentSet> entry : docsByCollection.entrySet()) {
+                final Collection collection = collections.get(entry.getKey());
+                final SchemaTypeConfig cfg = configOf(collection);
+                if (cfg == null) {
+                    // a collection without schema: its nodes are untyped, which only the step itself knows
+                    return null;
+                }
+                try {
+                    for (final Iterator<DocumentImpl> i = entry.getValue().getDocumentIterator(); i.hasNext(); ) {
+                        ensureUsable(i.next(), cfg);
+                    }
+                } catch (final XPathException e) {
+                    return null;
+                }
+                if (requested != null && requested.name() != null && !cfg.schema().key().equals(requested.schema())) {
+                    // another version of the schema: EXSA0001
+                    return null;
+                }
+                final short[] localTypeIds = index.table(collection.getId(), cfg.schema()).matching(typeCode, true);
+                if (localTypeIds.length > 0) {
+                    found.add(index.store().nodesOfType(entry.getValue(), localTypeIds));
+                }
+            }
+        } catch (final IOException e) {
+            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+        }
+        final NodeSet result = new NewArrayNodeSet();
+        for (final NodeSet nodes : found) {
+            for (final NodeProxy proxy : nodes) {
+                if (matchesKind(proxy.getNodeType(), nodeKind)) {
+                    result.add(proxy);
+                }
+            }
         }
         return result;
     }
