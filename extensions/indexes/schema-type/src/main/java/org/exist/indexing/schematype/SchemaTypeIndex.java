@@ -33,11 +33,13 @@ import org.exist.storage.DBBroker;
 import org.exist.storage.btree.BTree;
 import org.exist.storage.btree.DBException;
 import org.exist.storage.index.BFile;
+import org.exist.storage.lock.ManagedLock;
 import org.exist.storage.txn.Txn;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.schema.SchemaKey;
 import org.exist.util.DatabaseConfigurationException;
 import org.exist.util.FileUtils;
+import org.exist.util.LockException;
 import org.exist.xquery.schema.CompiledSchema;
 import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.w3c.dom.Element;
@@ -52,6 +54,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Index module for schema-aware XQuery: per-collection schema configuration, type annotations of stored nodes
@@ -157,7 +160,12 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     @Override
     public void sync() throws DBException {
         if (db != null) {
-            db.flush();
+            // as the core indexes: a concurrent write must not change a page while it is being written out
+            try (final ManagedLock<ReentrantLock> lock = pool.getLockManager().acquireBtreeWriteLock(db.getLockName())) {
+                db.flush();
+            } catch (final LockException e) {
+                throw new DBException("Failed to lock the schema type index for sync: " + e.getMessage());
+            }
         }
     }
 
