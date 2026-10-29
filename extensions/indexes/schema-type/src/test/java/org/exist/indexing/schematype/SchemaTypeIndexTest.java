@@ -370,6 +370,34 @@ public class SchemaTypeIndexTest {
     }
 
     @Test
+    void typeTestOnStaleDocumentRaisesStale() throws Exception {
+        store(PLAIN2, "t1.xml", T1);
+        store(CONF_PLAIN2, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
+        // stored before the collection was configured: the type tests must report EXSA0003, not an internal error
+        for (final String test : new String[] {
+                "doc('/db/plain2/t1.xml')//t:amount instance of element(*, xs:decimal)",
+                "doc('/db/plain2/t1.xml')//element(*, xs:decimal)",
+                "doc('/db/plain2/t1.xml')//t:amount/self::element(*, xs:decimal)"}) {
+            final org.exist.xquery.XPathException stale = assertThrows(org.exist.xquery.XPathException.class,
+                    () -> query(test), test);
+            assertEquals("EXSA0003", stale.getErrorCode().getErrorQName().getLocalPart(), test + ": " + stale);
+        }
+    }
+
+    @Test
+    void convertingNilledNodeIsCardinalityError() throws Exception {
+        final NodeProxy tradeId = node("/db/st/trades.xml", "/t:trades/t:trade[1]/t:tradeId");
+        final org.exist.xquery.XPathException e = assertThrows(org.exist.xquery.XPathException.class,
+                () -> tradeId.convertTo(Type.STRING));
+        assertEquals("XPTY0004", e.getErrorCode().getErrorQName().getLocalPart());
+        // a list-typed node has more than one item
+        final NodeProxy fixingDates = node("/db/st/trades.xml", "/t:trades/t:trade[1]/t:fixingDates");
+        final org.exist.xquery.XPathException list = assertThrows(org.exist.xquery.XPathException.class,
+                () -> fixingDates.convertTo(Type.DATE));
+        assertEquals("XPTY0004", list.getErrorCode().getErrorQName().getLocalPart());
+    }
+
+    @Test
     void moveBetweenConfiguredCollectionsLeavesNoPhantomMembers() throws Exception {
         store(CONF2, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
         // a different first document makes the second collection allocate its local ids in another order

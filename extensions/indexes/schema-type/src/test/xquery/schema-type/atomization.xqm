@@ -33,6 +33,8 @@ declare namespace test="http://exist-db.org/xquery/xqsuite";
 declare namespace t="urn:example:trade";
 
 declare variable $a:doc := doc('/db/schema-type-test/trade-1.xml');
+(:~ values whose typed order, equality and arithmetic differ from their untyped ones :)
+declare variable $a:doc2 := doc('/db/schema-type-test/trade-2.xml');
 
 declare %test:setUp function a:setUp() { fx:setUp() };
 
@@ -59,3 +61,27 @@ declare %test:assertTrue function a:list-general-compare() { $a:doc//t:fixingDat
 declare %test:assertTrue function a:attribute-typed() { data($a:doc//t:party/@id) instance of xs:ID };
 declare %test:assertTrue function a:simple-content-compare() { $a:doc//t:tradeDate eq xs:date('2026-03-02') };
 declare %test:assertFalse function a:unconfigured-not-nilled() { fn:nilled(doc('/db/plain/t1.xml')//*:tradeId) };
+
+(: typed and untyped results differ :)
+declare %test:assertEquals("9", "10") function a:order-by-typed() { for $v in $a:doc2//t:notional/t:amount order by $v return string($v) };
+declare %test:assertEquals(1) function a:distinct-typed-equality() { count(distinct-values($a:doc2//t:fee/t:amount)) };
+declare %test:assertTrue function a:arithmetic-decimal() { ($a:doc//t:notional/t:amount * 2) instance of xs:decimal };
+declare %test:assertTrue function a:sum-decimal() { sum($a:doc2//t:notional/t:amount) instance of xs:decimal };
+declare %test:assertEquals("19") function a:sum-value() { string(sum($a:doc2//t:notional/t:amount)) };
+declare %test:assertTrue function a:max-decimal() { max($a:doc2//t:notional/t:amount) instance of xs:decimal };
+declare %test:assertEquals("1.00") function a:format-typed() { format-number(($a:doc2//t:fee/t:amount)[1], "0.00") };
+
+(: list-typed and nilled nodes in every atomizing context :)
+declare %test:assertError("XPTY0004") function a:list-value-compare() { $a:doc//t:fixingDates eq xs:date('2026-01-01') };
+declare %test:assertError("XPTY0004") function a:list-order-by() { for $t in $a:doc//t:trade order by $t/t:fixingDates return 1 };
+declare %test:assertError("XPTY0004") function a:list-group-by() { for $t in $a:doc//t:trade group by $d := $t/t:fixingDates return 1 };
+declare %test:assertError("XPTY0004") function a:list-switch() { switch ($a:doc//t:fixingDates) case xs:date('2026-01-01') return 1 default return 0 };
+declare %test:assertError("XPTY0004") function a:list-cast() { $a:doc//t:fixingDates cast as xs:date };
+declare %test:assertEquals(1) function a:list-general-compare-predicate() { count($a:doc//t:trade[t:fixingDates = xs:date('2026-02-01')]) };
+declare %test:assertEquals(0) function a:list-general-compare-predicate-no-match() { count($a:doc//t:trade[t:fixingDates = xs:date('2026-03-01')]) };
+declare %test:assertEquals(4) function a:list-sum() { sum($a:doc2//t:rates) };
+declare %test:assertEmpty function a:nilled-value-compare() { $a:doc//t:tradeId eq "x" };
+declare %test:assertEquals(0) function a:nilled-value-compare-predicate() { count($a:doc//t:trade[t:tradeId eq ""]) };
+declare %test:assertFalse function a:nilled-general-compare() { $a:doc//t:tradeId = "" };
+declare %test:assertEmpty function a:nilled-arithmetic() { $a:doc//t:tradeId * 2 };
+declare %test:assertEquals(1, 2, 3) function a:nilled-order-by-empty-least() { for $t at $p in $a:doc//t:trade order by $t/t:tradeId empty least, $p return $p };

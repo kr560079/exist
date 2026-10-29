@@ -23,6 +23,7 @@ package org.exist.xquery;
 
 import org.exist.dom.QName;
 import org.exist.dom.persistent.NodeProxy;
+import org.exist.xquery.schema.AnnotationLookupException;
 import org.exist.xquery.schema.TypeAnnotations;
 import org.exist.xquery.value.Type;
 import org.w3c.dom.Node;
@@ -81,7 +82,8 @@ public class TypedNodeTest extends TypeTest {
         try {
             return TypeAnnotations.matches(context, other, typeCode, nillable);
         } catch (final XPathException e) {
-            throw new IllegalStateException(e);
+            // NodeTest#matches cannot throw it: LocationStep unwraps it
+            throw new AnnotationLookupException(e);
         }
     }
 
@@ -113,7 +115,8 @@ public class TypedNodeTest extends TypeTest {
         try {
             return TypeAnnotations.matches(context, proxy, typeCode, nillable);
         } catch (final XPathException e) {
-            throw new IllegalStateException(e);
+            // NodeTest#matches cannot throw it: LocationStep unwraps it
+            throw new AnnotationLookupException(e);
         }
     }
 

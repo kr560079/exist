@@ -25,12 +25,12 @@ xquery version "3.1";
  : Shared test data of the schema-type XQSuite modules.
  :
  : fx:setUp() stores trade.xsd and trade-common.xsd, a collection.xconf configuring the schema type index
- : (with typed values for xs:decimal, xs:date and t:NonNegativeDecimal), trade-1.xml and bad.xml into
+ : (with typed values for xs:decimal, xs:date and t:NonNegativeDecimal), trade-1.xml, trade-2.xml and bad.xml into
  : /db/schema-type-test, and trade-1.xml alone (no configuration) as /db/plain/t1.xml. fx:tearDown() removes it all.
  : Each test module calls them from its own %test:setUp and %test:tearDown functions.
  :
- : The fixture files are read from exist-core's test resources (the single copy shared with the Java tests),
- : relative to this module's directory, which is the working directory of the test JVM.
+ : The fixture files are read from exist-core's test resources (the single copy shared with the Java tests), from
+ : the directory in the system property schema-type.fixtures.dir which this module's pom sets for surefire.
  :)
 module namespace fx="http://exist-db.org/xquery/test/schema-type/fixtures";
 
@@ -39,8 +39,12 @@ declare variable $fx:COLLECTION := "/db/" || $fx:COLLECTION_NAME;
 declare variable $fx:CONFIG_COLLECTION := "/db/system/config/db/" || $fx:COLLECTION_NAME;
 declare variable $fx:PLAIN_COLLECTION := "/db/plain";
 
-(:~ The directory of the fixture files, relative to the working directory of the test JVM. :)
-declare variable $fx:FIXTURES := "../../../exist-core/src/test/resources/org/exist/xquery/schema/fixtures";
+(:~ The directory of the fixture files (an absolute path, set by the pom for surefire). :)
+declare variable $fx:FIXTURES as xs:string :=
+    let $dir := util:system-property("schema-type.fixtures.dir")
+    return
+        if (exists($dir)) then $dir
+        else error(xs:QName("fx:no-fixtures"), "system property schema-type.fixtures.dir is not set");
 
 declare variable $fx:XCONF :=
     <collection xmlns="http://exist-db.org/collection-config/1.0">
@@ -65,7 +69,11 @@ declare function fx:setUp() {
     let $schemas := (fx:store-fixture($fx:COLLECTION, "trade-common.xsd"), fx:store-fixture($fx:COLLECTION, "trade.xsd"))
     let $config-collection := xmldb:create-collection("/db/system/config/db", $fx:COLLECTION_NAME)
     let $config := xmldb:store($fx:CONFIG_COLLECTION, "collection.xconf", $fx:XCONF)
-    let $docs := (fx:store-fixture($fx:COLLECTION, "trade-1.xml"), fx:store-fixture($fx:COLLECTION, "bad.xml"))
+    let $docs := (
+        fx:store-fixture($fx:COLLECTION, "trade-1.xml"),
+        fx:store-fixture($fx:COLLECTION, "trade-2.xml"),
+        fx:store-fixture($fx:COLLECTION, "bad.xml")
+    )
     let $plain := xmldb:create-collection("/db", "plain")
     return
         xmldb:store($fx:PLAIN_COLLECTION, "t1.xml", doc($fx:COLLECTION || "/trade-1.xml"))

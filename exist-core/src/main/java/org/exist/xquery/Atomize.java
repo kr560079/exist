@@ -25,11 +25,14 @@ import org.exist.dom.persistent.DocumentSet;
 import org.exist.dom.persistent.NodeProxy;
 import org.exist.xquery.functions.array.ArrayType;
 import org.exist.xquery.util.ExpressionDumper;
+import org.exist.xquery.value.AtomicValue;
 import org.exist.xquery.value.Item;
 import org.exist.xquery.value.Sequence;
 import org.exist.xquery.value.SequenceIterator;
 import org.exist.xquery.value.Type;
 import org.exist.xquery.value.ValueSequence;
+
+import javax.annotation.Nullable;
 
 /**
  * @author wolf
@@ -71,6 +74,19 @@ public class Atomize extends AbstractExpression {
      
         return result;
 	}
+
+    /**
+     * Atomize an item in a context which admits at most one atomic value (value comparisons, order by, group by and
+     * switch keys, ...): a stored node's typed value may have several items (list types) or none (nilled elements).
+     *
+     * @param item the item
+     * @param expr the expression for error reporting, or null
+     * @return the atomic value, {@link AtomicValue#EMPTY_VALUE} if the typed value of a node is empty
+     * @throws XPathException {@code XPTY0004} if the typed value of a node has more than one item
+     */
+    public static AtomicValue atomizeSingle(final Item item, @Nullable final Expression expr) throws XPathException {
+        return item instanceof NodeProxy node ? node.atomizeSingle(expr) : item.atomize();
+    }
 
     public static Sequence atomize(Sequence input) throws XPathException {
         if (input.isEmpty())

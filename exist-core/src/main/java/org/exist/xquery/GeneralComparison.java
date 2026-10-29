@@ -629,7 +629,8 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                 if( context == null ) {
                     throw( new XPathException( this, "Internal error: context node missing" ) );
                 }
-                final AtomicValue lv = item.atomize();
+                // every item of the typed value (list types) takes part in the existential comparison
+                final Sequence lv = item.typedValue();
 
                 do {
                     final Sequence rs = getRight().eval(context.getNode().toSequence(), null);
@@ -637,7 +638,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                     for( final SequenceIterator i2 = Atomize.atomize(rs).iterate(); i2.hasNext(); ) {
                         final AtomicValue rv = i2.nextItem().atomize();
 
-                        if( compareAtomic( collator, lv, rv ) ) {
+                        if( compareTypedValue( collator, lv, rv ) ) {
                             result.add( item );
                         }
                     }
@@ -646,7 +647,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
         } else {
 
             for( final NodeProxy item : nodes ) {
-                final AtomicValue lv = item.atomize();
+                final Sequence lv = item.typedValue();
                 ContextItem ctxItem = item.getContext();
                 if( ctxItem != null ) {
                     // use the context node (e.g. the parent element) so that
@@ -657,7 +658,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                         for( final SequenceIterator i2 = Atomize.atomize(rs).iterate(); i2.hasNext(); ) {
                             final AtomicValue rv = i2.nextItem().atomize();
 
-                            if( compareAtomic( collator, lv, rv ) ) {
+                            if( compareTypedValue( collator, lv, rv ) ) {
                                 result.add( item );
                             }
                         }
@@ -668,7 +669,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                     for( final SequenceIterator i2 = Atomize.atomize(rs).iterate(); i2.hasNext(); ) {
                         final AtomicValue rv = i2.nextItem().atomize();
 
-                        if( compareAtomic( collator, lv, rv ) ) {
+                        if( compareTypedValue( collator, lv, rv ) ) {
                             result.add( item );
                         }
                     }
@@ -682,6 +683,23 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
         return( result );
     }
 
+
+    /**
+     * Compare the typed value of a stored node, which may have several items (list types) or none (nilled elements),
+     * with an atomic value: true if any of its items matches.
+     */
+    private boolean compareTypedValue( final Collator collator, final Sequence typedValue, final AtomicValue rv ) throws XPathException
+    {
+        if( typedValue instanceof AtomicValue lv ) {
+            return( compareAtomic( collator, lv, rv ) );
+        }
+        for( final SequenceIterator i = typedValue.iterate(); i.hasNext(); ) {
+            if( compareAtomic( collator, i.nextItem().atomize(), rv ) ) {
+                return( true );
+            }
+        }
+        return( false );
+    }
 
     /**
      * Optimized implementation: first checks if a range index is defined on the nodes in the left argument.

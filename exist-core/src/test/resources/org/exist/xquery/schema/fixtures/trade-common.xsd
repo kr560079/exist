@@ -44,6 +44,10 @@
         <xs:list itemType="xs:date"/>
     </xs:simpleType>
 
+    <xs:simpleType name="DecimalList">
+        <xs:list itemType="xs:decimal"/>
+    </xs:simpleType>
+
     <xs:simpleType name="DateOrDuration">
         <xs:union memberTypes="xs:date xs:duration"/>
     </xs:simpleType>

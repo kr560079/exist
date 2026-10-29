@@ -29,6 +29,7 @@ import org.exist.numbering.NodeId;
 import org.exist.stax.*;
 import org.exist.storage.ElementValue;
 import org.exist.storage.UpdateListener;
+import org.exist.xquery.schema.AnnotationLookupException;
 import org.exist.xquery.value.*;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -441,11 +442,22 @@ public class LocationStep extends Step {
                     default:
                         throw new IllegalArgumentException("Unsupported axis specified");
                 }
+                if (test instanceof TypedNodeTest && result instanceof VirtualNodeSet virtualNodes) {
+                    // realize now, so that a type annotation which cannot be determined is reported here
+                    virtualNodes.getLength();
+                }
             } catch (final XPathException e) {
                 if (e.getLine() <= 0) {
                     e.setLocation(getLine(), getColumn(), getSource());
                 }
                 throw e;
+            } catch (final AnnotationLookupException e) {
+                // a typed node test could not determine the type annotation of a stored node
+                final XPathException cause = e.getCause();
+                if (cause.getLine() <= 0) {
+                    cause.setLocation(getLine(), getColumn(), getSource());
+                }
+                throw cause;
             }
         } else {
             result = NodeSet.EMPTY_SET;

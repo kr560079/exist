@@ -27,6 +27,7 @@ import org.exist.dom.persistent.AVLTreeNodeSet;
 import org.exist.dom.persistent.NodeProxy;
 import org.exist.dom.persistent.NodeSet;
 import org.exist.numbering.NodeId;
+import org.exist.xquery.Atomize;
 import org.exist.xquery.Constants;
 import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
@@ -457,9 +458,11 @@ public class OrderedValueSequence extends AbstractSequence {
                 final OrderSpec orderSpec = orderSpecs.get(i);
                 final Expression sortExpression = orderSpec.getSortExpression();
                 final Sequence seq = sortExpression.eval(contextSequence, null);
-                if (seq.hasOne()) {
+                // a stored node's typed value may be empty (nilled) or have several items (list types: XPTY0004)
+                final AtomicValue key = seq.hasOne() ? Atomize.atomizeSingle(seq.itemAt(0), sortExpression) : null;
+                if (key != null && !key.isEmpty()) {
                     // sort keys of user-defined (schema) types order as values of their built-in base type
-                    AtomicValue value = seq.itemAt(0).atomize().unwrapUserType();
+                    AtomicValue value = key.unwrapUserType();
                     int valueType = value.getType();
 
                     /*

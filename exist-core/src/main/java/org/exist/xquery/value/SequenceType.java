@@ -197,8 +197,10 @@ public class SequenceType {
      *
      * @param item the item to check
      * @return true, if item is a subtype of primaryType
+     * @throws XPathException if the type annotation of a stored node cannot be determined ({@code EXSA0002},
+     *         {@code EXSA0003})
      */
-    public boolean checkType(final Item item) {
+    public boolean checkType(final Item item) throws XPathException {
         // an in-memory reference to a stored node has the kind and name of the node it refers to
         final Item node = item instanceof final ReferenceNode reference ? reference.getReference() : item;
         int type = node.getType();
@@ -245,15 +247,11 @@ public class SequenceType {
         return hasTypeAnnotation(node);
     }
 
-    private boolean hasTypeAnnotation(final Item node) {
+    private boolean hasTypeAnnotation(final Item node) throws XPathException {
         if (typeAnnotation == -1) {
             return true;
         }
-        try {
-            return TypeAnnotations.matches(null, (NodeValue) node, typeAnnotation, nillable);
-        } catch (final XPathException e) {
-            throw new IllegalStateException(e);
-        }
+        return TypeAnnotations.matches(null, (NodeValue) node, typeAnnotation, nillable);
     }
 
     /**

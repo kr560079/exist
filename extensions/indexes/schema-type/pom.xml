@@ -105,6 +105,18 @@
                 <filtering>true</filtering>
             </testResource>
         </testResources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <!-- the schema fixtures shared with exist-core's tests, read by src/test/xquery/schema-type/fixtures.xqm -->
+                        <schema-type.fixtures.dir>${project.basedir}/../../../exist-core/src/test/resources/org/exist/xquery/schema/fixtures</schema-type.fixtures.dir>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
     </build>
 
 </project>

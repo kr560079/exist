@@ -91,8 +91,8 @@ public class GroupByClause extends AbstractFLWORClause {
                 throw new XPathException(this, ErrorCodes.XPTY0004, "Grouping variable " + spec.getKeyVarName() + " " +
                         "evaluates to more than one item");
             }
-            final AtomicValue groupingValue = groupingSeq.isEmpty() ? AtomicValue.EMPTY_VALUE : groupingSeq.itemAt(0)
-                    .atomize();
+            final AtomicValue groupingValue = groupingSeq.isEmpty() ? AtomicValue.EMPTY_VALUE
+                    : Atomize.atomizeSingle(groupingSeq.itemAt(0), this);
 
             final SequenceType groupingVarType = spec.getKeyVarType() != null ? spec.getKeyVarType() : new SequenceType(Type.ANY_ATOMIC_TYPE, groupingValue.isEmpty() ? Cardinality.EMPTY_SEQUENCE : Cardinality.EXACTLY_ONE);
             final SequenceType groupingValueType = new SequenceType(groupingValue.getType(), groupingValue.isEmpty() ? Cardinality.EMPTY_SEQUENCE : Cardinality.EXACTLY_ONE);

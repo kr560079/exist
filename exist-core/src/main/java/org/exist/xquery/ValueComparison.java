@@ -75,8 +75,12 @@ public class ValueComparison extends GeneralComparison {
 		if(ls.isEmpty() || rs.isEmpty())
 			{return Sequence.EMPTY_SEQUENCE;}
 		if (ls.hasOne() && rs.hasOne()) {
-			final AtomicValue lv = ls.itemAt(0).atomize();
-			final AtomicValue rv = rs.itemAt(0).atomize();
+			// a stored node's typed value may be empty (nilled) or have several items (list types: XPTY0004)
+			final AtomicValue lv = Atomize.atomizeSingle(ls.itemAt(0), this);
+			final AtomicValue rv = Atomize.atomizeSingle(rs.itemAt(0), this);
+			if (lv.isEmpty() || rv.isEmpty()) {
+				return Sequence.EMPTY_SEQUENCE;
+			}
             final Collator collator = getCollator(contextSequence);
 			return BooleanValue.valueOf(compareAtomic(collator, lv, rv, StringTruncationOperator.NONE, relation));
 		}
@@ -95,13 +99,15 @@ public class ValueComparison extends GeneralComparison {
                     throw new XPathException(this, ErrorCodes.XPDY0002, "Context is missing for node set comparison");
                 }
                 do {
-                    final AtomicValue lv = current.atomize();
+                    final AtomicValue lv = Atomize.atomizeSingle(current, this);
                     final Sequence rs = getRight().eval(context.getNode().toSequence(), null);
                     if (!rs.hasOne()) {
                         throw new XPathException(this, ErrorCodes.XPTY0004,
 								"Type error: sequence with less or more than one item is not allowed here");
                     }
-                    if (compareAtomic(collator, lv, rs.itemAt(0).atomize(), StringTruncationOperator.NONE, relation)) {
+                    final AtomicValue rv = Atomize.atomizeSingle(rs.itemAt(0), this);
+                    if (!lv.isEmpty() && !rv.isEmpty()
+                            && compareAtomic(collator, lv, rv, StringTruncationOperator.NONE, relation)) {
                         result.add(current);
                     }
                 } while ((context = context.getNextDirect()) != null);
@@ -111,10 +117,13 @@ public class ValueComparison extends GeneralComparison {
             if (!rs.hasOne())
                 {throw new XPathException(this, ErrorCodes.XPTY0004,
 						"Type error: sequence with less or more than one item is not allowed here");}
-            final AtomicValue rv = rs.itemAt(0).atomize();
+            final AtomicValue rv = Atomize.atomizeSingle(rs.itemAt(0), this);
+            if (rv.isEmpty()) {
+                return result;
+            }
             for (final NodeProxy current : nodes) {
-                final AtomicValue lv = current.atomize();
-                if (compareAtomic(collator, lv, rv, StringTruncationOperator.NONE, Comparison.EQ)) {
+                final AtomicValue lv = Atomize.atomizeSingle(current, this);
+                if (!lv.isEmpty() && compareAtomic(collator, lv, rv, StringTruncationOperator.NONE, Comparison.EQ)) {
                     result.add(current);
                 }
             }

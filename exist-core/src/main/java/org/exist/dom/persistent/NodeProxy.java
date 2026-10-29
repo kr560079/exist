@@ -781,7 +781,12 @@ public class NodeProxy implements NodeSet, NodeValue, NodeHandle, DocumentSet, C
             if (annotation == null) {
                 return UntypedAtomicValue.convertTo(getNodeValue(broker), requiredType, null);
             }
-            return first(typedValue(broker, annotation)).convertTo(requiredType);
+            final AtomicValue value = single(typedValue(broker, annotation), null);
+            if (value.isEmpty()) {
+                throw new XPathException((Expression) null, ErrorCodes.XPTY0004,
+                        "The typed value of the node is empty and cannot be converted to " + Type.getTypeName(requiredType));
+            }
+            return value.convertTo(requiredType);
         } catch (final EXistException e) {
             return UntypedAtomicValue.convertTo("", requiredType, null);
         }
@@ -789,8 +794,13 @@ public class NodeProxy implements NodeSet, NodeValue, NodeHandle, DocumentSet, C
 
     /**
      * Atomize the node: its typed value if the node has a type annotation in the schema type index, otherwise
-     * {@code xs:untypedAtomic}. Returns the first item of a typed value which is a sequence (list types, see
-     * {@link #typedValue()}), and {@link AtomicValue#EMPTY_VALUE} for an empty one (nilled elements).
+     * {@code xs:untypedAtomic}.
+     *
+     * <p>Returns only the first item of a typed value which is a sequence (list types), and
+     * {@link AtomicValue#EMPTY_VALUE} for an empty one (nilled elements). Query semantics must not rely on this:
+     * contexts which atomize a sequence use {@link #typedValue()} (via {@link Atomize#atomize(Sequence)}), contexts
+     * which admit at most one value use {@link #atomizeSingle(Expression)} (via
+     * {@link Atomize#atomizeSingle(Item, Expression)}).</p>
      */
     @Override
     public AtomicValue atomize() throws XPathException {
@@ -800,6 +810,26 @@ public class NodeProxy implements NodeSet, NodeValue, NodeHandle, DocumentSet, C
                 return new UntypedAtomicValue(getNodeValue(broker));
             }
             return first(typedValue(broker, annotation));
+        } catch (final EXistException e) {
+            return new UntypedAtomicValue("");
+        }
+    }
+
+    /**
+     * Atomize the node in a context which admits at most one atomic value (value comparisons, order by keys, ...).
+     *
+     * @param expr the expression for error reporting, or null
+     * @return the single item of the typed value, {@link AtomicValue#EMPTY_VALUE} if the typed value is empty
+     * @throws XPathException {@code XPTY0004} if the typed value has more than one item (list types),
+     *         {@code FOTY0012} if the node has element-only content, {@code EXSA0002} or {@code EXSA0003}
+     */
+    public AtomicValue atomizeSingle(@Nullable final Expression expr) throws XPathException {
+        try (final DBBroker broker = doc.getBrokerPool().getBroker()) {
+            final TypeAnnotation annotation = getTypeAnnotation(broker);
+            if (annotation == null) {
+                return new UntypedAtomicValue(getNodeValue(broker));
+            }
+            return single(typedValue(broker, annotation), expr);
         } catch (final EXistException e) {
             return new UntypedAtomicValue("");
         }
@@ -865,6 +895,17 @@ public class NodeProxy implements NodeSet, NodeValue, NodeHandle, DocumentSet, C
 
     private static AtomicValue first(final Sequence typedValue) {
         return typedValue.isEmpty() ? AtomicValue.EMPTY_VALUE : (AtomicValue) typedValue.itemAt(0);
+    }
+
+    private static AtomicValue single(final Sequence typedValue, @Nullable final Expression expr) throws XPathException {
+        if (typedValue instanceof AtomicValue value) {
+            return value;
+        }
+        if (typedValue.hasMany()) {
+            throw new XPathException(expr, ErrorCodes.XPTY0004, "The typed value of the node has "
+                    + typedValue.getItemCount() + " items where at most one is allowed: " + typedValue);
+        }
+        return first(typedValue);
     }
 
     @Override

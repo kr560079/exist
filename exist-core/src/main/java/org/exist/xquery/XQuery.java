@@ -48,6 +48,7 @@ import org.exist.storage.DBBroker;
 import org.exist.xquery.parser.XQueryLexer;
 import org.exist.xquery.parser.XQueryParser;
 import org.exist.xquery.parser.XQueryTreeParser;
+import org.exist.xquery.schema.AnnotationLookupException;
 import org.exist.xquery.util.ExpressionDumper;
 import org.exist.xquery.util.HTTPUtils;
 import org.exist.xquery.value.Sequence;
@@ -472,6 +473,9 @@ public class XQuery {
                 }
 
                 return result;
+            } catch (final AnnotationLookupException e) {
+                // a typed node test evaluated outside a location step could not determine a type annotation
+                throw e.getCause();
             } finally {
                 context.getProfiler().traceQueryEnd(context);
                 // track query stats before context is reset

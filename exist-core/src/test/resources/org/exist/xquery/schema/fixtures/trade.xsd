@@ -146,6 +146,7 @@
                     </xs:complexType>
                 </xs:element>
                 <xs:element name="fixingDates" type="t:DateList" minOccurs="0"/>
+                <xs:element name="rates" type="t:DecimalList" minOccurs="0"/>
             </xs:sequence>
         </xs:complexType>
     </xs:element>
