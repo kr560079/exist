@@ -25,6 +25,7 @@ import org.exist.collections.Collection;
 import org.exist.dom.QName;
 import org.exist.numbering.NodeId;
 import org.exist.numbering.NodeIdFactory;
+import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.xquery.schema.ValueChecker;
 import org.xml.sax.Attributes;
@@ -52,6 +53,7 @@ final class SchemaTypeStoreCheck extends DefaultHandler2 implements TypeAnnotati
 
     private final SchemaTypeIndexWorker worker;
     private final Collection collection;
+    private final XmldbURI name;
     private final SchemaTypeConfig config;
     private final NodeIdFactory ids;
     private final boolean reject;
@@ -63,10 +65,11 @@ final class SchemaTypeStoreCheck extends DefaultHandler2 implements TypeAnnotati
     private final Map<String, String> declared = new HashMap<>();
     private NodeId rootId;
 
-    SchemaTypeStoreCheck(final SchemaTypeIndexWorker worker, final Collection collection, final SchemaTypeConfig config,
-            final NodeIdFactory ids) {
+    SchemaTypeStoreCheck(final SchemaTypeIndexWorker worker, final Collection collection, final XmldbURI name,
+            final SchemaTypeConfig config, final NodeIdFactory ids) {
         this.worker = worker;
         this.collection = collection;
+        this.name = name;
         this.config = config;
         this.ids = ids;
         this.reject = config.onUnassignable() == OnUnassignable.REJECT;
@@ -80,6 +83,7 @@ final class SchemaTypeStoreCheck extends DefaultHandler2 implements TypeAnnotati
     public void startDocument() throws SAXException {
         try {
             worker.verifySchemaAvailable(collection, config);
+            worker.verifiedForStore(collection, name, config);
         } catch (final SchemaTypeException e) {
             throw new SAXException(e.getMessage(), e);
         }

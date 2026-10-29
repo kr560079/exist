@@ -691,7 +691,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     @Override
     public @Nullable StoreCheck storeCheck(final Collection collection, final XmldbURI name) {
         final SchemaTypeConfig cfg = configOf(collection);
-        return cfg == null ? null : new SchemaTypeStoreCheck(this, collection, cfg, broker.getBrokerPool().getNodeFactory());
+        return cfg == null ? null : new SchemaTypeStoreCheck(this, collection, name, cfg, broker.getBrokerPool().getNodeFactory());
     }
 
     @Override
@@ -1058,6 +1058,29 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
      */
     void verifySchemaAvailable(final SchemaTypeConfig cfg) {
         verifySchemaAvailable(document.getCollection(), cfg);
+    }
+
+    /** what the store check of the document being stored verified (one verification per store, not two) */
+    private record StoreVerified(SchemaTypeConfig cfg, int collectionId, XmldbURI name) {
+    }
+
+    private @Nullable StoreVerified storeVerified;
+
+    /** the store check verified {@code cfg} for the document {@code name} about to be stored into the collection */
+    void verifiedForStore(final Collection collection, final XmldbURI name, final SchemaTypeConfig cfg) {
+        storeVerified = new StoreVerified(cfg, collection.getId(), name);
+    }
+
+    /**
+     * @return true if the store check verified {@code cfg} for the current document a moment ago, during the same
+     * store (the record is used once)
+     */
+    boolean takeVerifiedForStore(final SchemaTypeConfig cfg) {
+        final StoreVerified verified = storeVerified;
+        storeVerified = null;
+        return verified != null && verified.cfg() == cfg && document != null
+                && verified.collectionId() == document.getCollection().getId()
+                && verified.name().equals(document.getFileURI());
     }
 
     void verifySchemaAvailable(final Collection collection, final SchemaTypeConfig cfg) {

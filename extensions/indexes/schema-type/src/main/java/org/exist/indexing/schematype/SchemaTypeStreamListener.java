@@ -325,7 +325,10 @@ final class SchemaTypeStreamListener extends AbstractStreamListener {
         if (cfg == null) {
             return false;
         }
-        worker.verifySchemaAvailable(cfg);
+        // a store has just been verified by its store check (the validation pass of the same store)
+        if (!(passKind == PassKind.FULL && worker.takeVerifiedForStore(cfg))) {
+            worker.verifySchemaAvailable(cfg);
+        }
         kind = passKind;
         docId = worker.getDocument().getDocId();
         config = cfg;
