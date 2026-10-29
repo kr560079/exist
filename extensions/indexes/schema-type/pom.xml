@@ -45,6 +45,19 @@
       <tag>HEAD</tag>
   </scm>
 
+    <properties>
+        <!--
+            The FpML confirmation view (schemas and examples) for FpmlEndToEndTest, downloaded rather than committed
+            (see src/test/resources/fpml/README.md). -Dfpml.skip=true skips the download; the test then skips itself,
+            as it does when the download fails (offline builds do not fail).
+        -->
+        <fpml.version>5-12</fpml.version>
+        <fpml.url>https://www.fpml.org/spec/fpml-5-12-4-rec-1/xml/confirmation-5-12_xml.zip</fpml.url>
+        <fpml.sha256>90c091f1137339cd5debfb396bc0b943d023a09f4395246ebb4bbd3d84b3b6c9</fpml.sha256>
+        <fpml.dir>${project.build.directory}/fpml</fpml.dir>
+        <fpml.skip>false</fpml.skip>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.exist-db</groupId>
@@ -123,8 +136,41 @@
                     <systemPropertyVariables>
                         <!-- the schema fixtures shared with exist-core's tests, read by src/test/xquery/schema-type/fixtures.xqm -->
                         <schema-type.fixtures.dir>${project.basedir}/../../../exist-core/src/test/resources/org/exist/xquery/schema/fixtures</schema-type.fixtures.dir>
+                        <!-- the unpacked FpML confirmation view, read by FpmlEndToEndTest -->
+                        <fpml.dir>${fpml.dir}</fpml.dir>
+                        <fpml.version>${fpml.version}</fpml.version>
                     </systemPropertyVariables>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>com.googlecode.maven-download-plugin</groupId>
+                <artifactId>download-maven-plugin</artifactId>
+                <version>1.13.0</version>
+                <executions>
+                    <execution>
+                        <id>fpml-confirmation-view</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>wget</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${fpml.skip}</skip>
+                            <url>${fpml.url}</url>
+                            <sha256>${fpml.sha256}</sha256>
+                            <alwaysVerifyChecksum>true</alwaysVerifyChecksum>
+                            <readTimeOut>120000</readTimeOut>
+                            <retries>2</retries>
+                            <!-- no network: the test skips itself instead of failing the build -->
+                            <failOnError>false</failOnError>
+                            <unpack>true</unpack>
+                            <includes>
+                                <include>confirmation/*.xsd</include>
+                                <include>confirmation/products/**/*.xml</include>
+                            </includes>
+                            <outputDirectory>${fpml.dir}</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
