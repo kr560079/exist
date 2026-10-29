@@ -84,8 +84,10 @@ class DeferredFunctionCallTest {
         expect(mockFunctionSignature.getReturnType()).andReturn(mockReturnType);
         expect(mockReturnType.getCardinality()).andReturn(Cardinality.ZERO_OR_MORE);
         expect(mockReturnType.getPrimaryType()).andReturn(Type.NODE).times(4);
+        // the return type has no type annotation (element(*, T)), so no DynamicAnnotationCheck is added
+        expect(mockReturnType.getTypeAnnotation()).andReturn(-1).anyTimes();
         expect(mockContext.nextExpressionId()).andReturn(nextExpressionId++);
-        
+
         //expectations for functionCall.evalFunction
         expect(mockContext.isProfilingEnabled()).andReturn(false);
 
