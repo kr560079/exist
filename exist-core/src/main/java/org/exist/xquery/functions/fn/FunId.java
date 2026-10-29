@@ -33,6 +33,9 @@ import org.exist.xquery.Constants.Comparison;
 import org.exist.xquery.value.*;
 import org.w3c.dom.Node;
 
+import org.exist.xquery.schema.SchemaIds;
+
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.TreeSet;
@@ -148,6 +151,7 @@ public class FunId extends Function {
             else
                 {result = new ExtArrayNodeSet();}
 
+            final Set<String> schemaIds = new LinkedHashSet<>();
             for(final SequenceIterator i = idval.iterate(); i.hasNext(); ) {
     			nextId = i.nextItem().getStringValue();
                 if (nextId.isEmpty())
@@ -158,6 +162,7 @@ public class FunId extends Function {
     				while(tok.hasMoreTokens()) {
     					nextId = tok.nextToken();
     					if(XMLNames.isNCName(nextId)) {
+                            schemaIds.add(nextId);
                             if (processInMem)
                                 {getId(result, contextSequence, nextId);}
                             else
@@ -166,6 +171,7 @@ public class FunId extends Function {
     				}
     			} else {
     				if(XMLNames.isNCName(nextId)) {
+                        schemaIds.add(nextId);
                         if (processInMem)
                             {getId(result, contextSequence, nextId);}
                         else
@@ -173,6 +179,9 @@ public class FunId extends Function {
                     }
     			}
     		}
+            if (!processInMem) {
+                SchemaIds.addElementsWithId(context, docs, schemaIds, (NodeSet) result, false);
+            }
         }
 
 		result.removeDuplicates();

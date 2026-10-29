@@ -30,6 +30,9 @@ import org.exist.xquery.Constants.Comparison;
 import org.exist.xquery.value.*;
 import org.w3c.dom.Node;
 
+import org.exist.xquery.schema.SchemaIds;
+
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.TreeSet;
@@ -43,7 +46,7 @@ public class FunElementWithId extends BasicFunction {
             "Returns the sequence of element nodes that have an ID value " +
                     "matching the value of one or more of the IDREF values supplied in $idrefs. " +
                     "If none is matching or $idrefs is the empty sequence, returns the empty sequence.";
-    private static final FunctionReturnSequenceType FN_RETURN = returnsOptMany(Type.STRING, "the elements with IDs matching IDREFs from $idref-sequence");
+    private static final FunctionReturnSequenceType FN_RETURN = returnsOptMany(Type.ELEMENT, "the elements with IDs matching IDREFs from $idref-sequence");
     private static final FunctionParameterSequenceType PARAM_ID_REFS_STRING = optManyParam("idrefs", Type.STRING, "The IDREF sequence");
     private static final FunctionParameterSequenceType PARAM_NODE = param("node", Type.NODE, "A node in the document to search");
     public static final FunctionSignature[] FS_ELEMENT_WITH_ID_SIGNATURES = functionSignatures(
@@ -116,6 +119,7 @@ public class FunElementWithId extends BasicFunction {
                 result = new ExtArrayNodeSet();
             }
 
+            final Set<String> schemaIds = new LinkedHashSet<>();
             for(final SequenceIterator i = idval.iterate(); i.hasNext(); ) {
                 nextId = i.nextItem().getStringValue();
                 if (!nextId.isEmpty()) {
@@ -124,6 +128,7 @@ public class FunElementWithId extends BasicFunction {
                         while (tok.hasMoreTokens()) {
                             nextId = tok.nextToken();
                             if (XMLNames.isNCName(nextId)) {
+                                schemaIds.add(nextId);
                                 if (processInMem) {
                                     getId(result, contextSequence, nextId);
                                 } else {
@@ -133,6 +138,7 @@ public class FunElementWithId extends BasicFunction {
                         }
                     } else {
                         if (XMLNames.isNCName(nextId)) {
+                            schemaIds.add(nextId);
                             if (processInMem) {
                                 getId(result, contextSequence, nextId);
                             } else {
@@ -141,6 +147,9 @@ public class FunElementWithId extends BasicFunction {
                         }
                     }
                 }
+            }
+            if (!processInMem) {
+                SchemaIds.addElementsWithId(context, docs, schemaIds, (NodeSet) result, true);
             }
         }
         result.removeDuplicates();

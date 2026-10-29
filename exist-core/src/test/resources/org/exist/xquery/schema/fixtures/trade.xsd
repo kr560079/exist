@@ -156,6 +156,15 @@
                 </xs:element>
                 <xs:element name="fixingDates" type="t:DateList" minOccurs="0"/>
                 <xs:element name="rates" type="t:DecimalList" minOccurs="0"/>
+                <!-- schema-typed IDs and IDREFs on elements and in lists (fn:id, fn:idref, fn:element-with-id) -->
+                <xs:element name="idElem" type="xs:ID" minOccurs="0"/>
+                <xs:element name="refElem" type="xs:IDREF" minOccurs="0"/>
+                <xs:element name="refs" type="xs:IDREFS" minOccurs="0"/>
+                <xs:element name="multiRef" minOccurs="0">
+                    <xs:complexType>
+                        <xs:attribute name="hrefs" type="xs:IDREFS"/>
+                    </xs:complexType>
+                </xs:element>
             </xs:sequence>
         </xs:complexType>
     </xs:element>

@@ -54,6 +54,9 @@ import org.exist.xquery.value.Type;
 import org.exist.xquery.value.ValueSequence;
 import org.w3c.dom.Node;
 
+import org.exist.xquery.schema.SchemaIds;
+
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -165,16 +168,21 @@ public class FunIdRef extends Function {
             else
                 {result = new ExtArrayNodeSet();}
 
+            final Set<String> schemaIds = new LinkedHashSet<>();
             for(final SequenceIterator i = idrefval.iterate(); i.hasNext(); ) {
     			nextId = i.nextItem().getStringValue();
                 if (nextId.isEmpty()) {continue;}
                 if(XMLNames.isNCName(nextId)) {
+                    schemaIds.add(nextId);
                     if (processInMem)
                         {getIdRef(result, contextSequence, nextId);}
                     else
                         {getIdRef((NodeSet)result, docs, nextId);}
                 }
     		}
+            if (!processInMem) {
+                SchemaIds.addNodesWithIdref(context, docs, schemaIds, (NodeSet) result);
+            }
         }
 		
 		result.removeDuplicates();
