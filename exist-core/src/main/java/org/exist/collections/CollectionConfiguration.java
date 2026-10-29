@@ -163,6 +163,11 @@ public class CollectionConfiguration {
                         if (asOwner != null) {
                             broker.pushSubject(asOwner);
                         }
+                        final TypeAnnotationProvider ownerAware = !checkOnly && hasSchemaType(elem)
+                                && broker.getIndexController().getWorkerByIndexId(TypeAnnotationProvider.INDEX_ID) instanceof TypeAnnotationProvider p ? p : null;
+                        if (ownerAware != null) {
+                            ownerAware.setConfigurationOwner(asOwner);
+                        }
                         try {
                             if (checkOnly && hasSchemaType(elem)
                                     && broker.getIndexController().getWorkerByIndexId(TypeAnnotationProvider.INDEX_ID) instanceof TypeAnnotationProvider provider) {
@@ -181,6 +186,9 @@ public class CollectionConfiguration {
                                 LOG.warn(e.getMessage(), e);
                             }
                         } finally {
+                            if (ownerAware != null) {
+                                ownerAware.setConfigurationOwner(null);
+                            }
                             if (asOwner != null) {
                                 broker.popSubject();
                             }

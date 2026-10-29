@@ -2837,6 +2837,8 @@ public class NativeBroker implements DBBroker {
         final XmldbURI targetCollectionUri = targetCollection.getURI();
         final XmldbURI targetDocumentUri = targetCollectionUri.append(newDocName);
 
+        checkBeforeStore(sourceDocument, targetCollection, newDocName);
+
         trigger.beforeCopyDocument(this, transaction, sourceDocument, targetDocumentUri);
 
         final DocumentImpl newDocument;
@@ -3038,6 +3040,10 @@ public class NativeBroker implements DBBroker {
 
         // we assume the caller holds a WRITE_LOCK on sourceDocument#getCollection()
         final Collection sourceCollection = sourceDocument.getCollection();
+
+        if (sourceCollection.getId() != targetCollection.getId()) {
+            checkBeforeStore(sourceDocument, targetCollection, newName);
+        }
         if(!sourceCollection.getPermissionsNoLock().validate(getCurrentSubject(), Permission.WRITE | Permission.EXECUTE)) {
             throw new PermissionDeniedException("Account " + getCurrentSubject().getName() + " have insufficient privileges on source Collection to move resource: " + sourceDocumentUri);
         }
@@ -3096,7 +3102,7 @@ public class NativeBroker implements DBBroker {
         if(sourceDocument.getResourceType() == DocumentImpl.XML_FILE) {
             if(!renameOnly) {
                 // reindexing
-                reindexXMLResource(transaction, sourceDocument, IndexMode.REPAIR);
+                reindexXMLResource(transaction, sourceDocument, IndexMode.REPAIR, org.exist.indexing.ReindexScope.ALL, false);
             }
         }
 
@@ -3303,6 +3309,11 @@ public class NativeBroker implements DBBroker {
     @Override
     public void reindexXMLResource(final Txn transaction, final DocumentImpl doc, final IndexMode mode,
             final org.exist.indexing.ReindexScope scope) {
+        reindexXMLResource(transaction, doc, mode, scope, true);
+    }
+
+    private void reindexXMLResource(final Txn transaction, final DocumentImpl doc, final IndexMode mode,
+            final org.exist.indexing.ReindexScope scope, final boolean explicit) {
         getIndexController().runWithReindexing(() -> {
             final StreamListener listener = getIndexController().getStreamListener(doc, ReindexMode.STORE);
             getIndexController().startIndexDocument(transaction, listener);
@@ -3321,7 +3332,27 @@ public class NativeBroker implements DBBroker {
                 getIndexController().endIndexDocument(transaction, listener);
             }
             flush();
-        }, scope);
+        }, scope, explicit);
+    }
+
+    /**
+     * Before a document is copied or moved into another collection: let the collection's schema type configuration
+     * veto it, so that nothing is written for a document the collection would reject.
+     */
+    private void checkBeforeStore(final DocumentImpl source, final Collection target, final XmldbURI name) throws IOException {
+        if (source.getResourceType() != DocumentImpl.XML_FILE) {
+            return;
+        }
+        final org.exist.xquery.schema.TypeAnnotationProvider provider = org.exist.xquery.schema.TypeAnnotationProvider.of(this);
+        final org.exist.xquery.schema.TypeAnnotationProvider.StoreCheck check = provider == null ? null : provider.storeCheck(target, name);
+        if (check == null) {
+            return;
+        }
+        try {
+            new org.exist.util.serializer.DOMStreamer(check, check).serialize(source, true);
+        } catch (final org.xml.sax.SAXException e) {
+            throw new IOException(e.getMessage(), e);
+        }
     }
 
     @Override

@@ -61,6 +61,7 @@ public final class SchemaTypeConfig {
     private final @Nullable Subject loadAs;
     private volatile @Nullable CompiledSchema schema;
     private volatile @Nullable String unavailableReason;
+    private final java.util.concurrent.atomic.AtomicBoolean outageLogged = new java.util.concurrent.atomic.AtomicBoolean();
 
     SchemaTypeConfig(final String href, final OnUnassignable onUnassignable, final boolean checkValues, final boolean allowRemote,
             final boolean reindexOnSchemaChange, final Set<QName> typedValueTypes, @Nullable final CompiledSchema schema,
@@ -121,12 +122,18 @@ public final class SchemaTypeConfig {
         return loadAs;
     }
 
+    /** @return true the first time it is called during an outage: the outage is logged once */
+    boolean logOutageOnce() {
+        return outageLogged.compareAndSet(false, true);
+    }
+
     /** the schema is loadable again: make the configuration available (no effect if it already is) */
     void recover(final CompiledSchema loaded) {
         if (schema == null) {
             schema = loaded;
             unavailableReason = null;
         }
+        outageLogged.set(false);
     }
 
     private static final String HREF_ATTR = "href";
@@ -154,6 +161,15 @@ public final class SchemaTypeConfig {
      */
     static SchemaTypeConfig parse(final DBBroker broker, final Element schemaTypeEl, @Nullable final Element typedValuesEl,
             final Map<String, String> namespaces, final boolean lenient) throws DatabaseConfigurationException {
+        return parse(broker, schemaTypeEl, typedValuesEl, namespaces, lenient, broker.getCurrentSubject());
+    }
+
+    /**
+     * @param owner the owner of the configuration document, the only subject the schema is loaded (and later
+     *              reloaded or reindexed) as; null if it cannot be determined, which makes a lenient configuration unavailable
+     */
+    static SchemaTypeConfig parse(final DBBroker broker, final Element schemaTypeEl, @Nullable final Element typedValuesEl,
+            final Map<String, String> namespaces, final boolean lenient, @Nullable final Subject owner) throws DatabaseConfigurationException {
         final String href = schemaTypeEl.getAttribute(HREF_ATTR);
         if (href.isEmpty()) {
             throw new DatabaseConfigurationException("<schema-type> requires an '" + HREF_ATTR + "' attribute");
@@ -175,6 +191,9 @@ public final class SchemaTypeConfig {
         CompiledSchema schema = null;
         String unavailable = null;
         try {
+            if (owner == null) {
+                throw new SchemaLoadException("the owner of the collection configuration document cannot be determined");
+            }
             schema = broker.getBrokerPool().getSchemaRegistry().load(broker, href, allowRemote);
         } catch (final SchemaLoadException e) {
             final StringBuilder msg = new StringBuilder("Unable to load schema ").append(href).append(": ").append(e.getMessage());
@@ -192,7 +211,6 @@ public final class SchemaTypeConfig {
                 throw new DatabaseConfigurationException(msg.toString(), e);
             }
             unavailable = msg.toString();
-            LOG.error("{}: the collection stays configured; stores and queries fail with EXSA0002 until the schema can be loaded", unavailable);
         }
 
         final Set<QName> typedValueTypes = new LinkedHashSet<>();
@@ -206,8 +224,12 @@ public final class SchemaTypeConfig {
             }
         }
 
-        return new SchemaTypeConfig(href, onUnassignable, checkValues, allowRemote, reindex, Set.copyOf(typedValueTypes), schema,
-                unavailable, broker.getCurrentSubject());
+        final SchemaTypeConfig config = new SchemaTypeConfig(href, onUnassignable, checkValues, allowRemote, reindex,
+                Set.copyOf(typedValueTypes), schema, unavailable, owner);
+        if (unavailable != null && config.logOutageOnce()) {
+            LOG.error("{}: the collection stays configured; stores and queries fail with EXSA0002 until the schema can be loaded", unavailable);
+        }
+        return config;
     }
 
     private static boolean booleanAttr(final Element el, final String name, final boolean defaultValue) throws DatabaseConfigurationException {

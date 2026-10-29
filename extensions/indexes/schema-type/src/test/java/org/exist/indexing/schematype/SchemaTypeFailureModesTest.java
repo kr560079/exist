@@ -65,6 +65,9 @@ public class SchemaTypeFailureModesTest {
     private static final XmldbURI ST = XmldbURI.create("/db/st");
     private static final XmldbURI SCHEMAS = XmldbURI.create("/db/st-schema");
     private static final XmldbURI CONF = XmldbURI.create("/db/system/config/db/st");
+    private static final XmldbURI PLAIN = XmldbURI.create("/db/st-plain");
+    private static final XmldbURI CHILD = XmldbURI.create("/db/st/child");
+    private static final XmldbURI CONF_CHILD = XmldbURI.create("/db/system/config/db/st/child");
     private static final XmldbURI LATE = XmldbURI.create("/db/late");
     private static final XmldbURI CONF_LATE = XmldbURI.create("/db/system/config/db/late");
     private static final String HREF = "xmldb:exist:///db/st-schema/trade.xsd";
@@ -101,7 +104,7 @@ public class SchemaTypeFailureModesTest {
     @AfterEach
     void tearDown() throws Exception {
         try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF_LATE, ST, LATE, SCHEMAS}) {
+            for (final XmldbURI uri : new XmldbURI[] {CONF, CONF_LATE, ST, LATE, PLAIN, SCHEMAS}) {
                 final Collection col = broker.getCollection(uri);
                 if (col != null) {
                     broker.removeCollection(txn, col);
@@ -180,18 +183,19 @@ public class SchemaTypeFailureModesTest {
     }
 
     @Test
-    void storingConfigurationWithChangedSchemaReindexesInTheStore() throws Exception {
+    void storingConfigurationWithChangedSchemaReindexesAfterTheStore() throws Exception {
         configure(XCONF_AUTO);
         store(ST, "t1.xml", fixture("trade-1.xml"));
         final DocMeta before = docMeta("t1.xml");
+        final int scheduledBefore = index().scheduledReindexCount();
 
         modifyXsd();
         store(CONF, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_AUTO);
 
-        // reindexed by the store of the configuration: fresh immediately
-        assertTyped("/db/st/t1.xml");
+        // scheduled by the store (as the storing user), done outside the store's locks: wait for it
+        awaitTyped("/db/st/t1.xml");
         assertNotEquals(before.indexedWith(), docMeta("t1.xml").indexedWith());
-        assertEquals(0, index().scheduledReindexCount());
+        assertEquals(scheduledBefore + 1, index().scheduledReindexCount());
     }
 
     @Test
@@ -288,6 +292,137 @@ public class SchemaTypeFailureModesTest {
     }
 
     @Test
+    void copyOrMoveIntoRejectCollectionIsRejected() throws Exception {
+        configure(XCONF_REJECT);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        store(PLAIN, "bad.xml", fixture("bad.xml"));
+
+        final Exception copy = assertThrows(Exception.class, () -> xquery("xmldb:copy-resource('/db/st-plain', 'bad.xml', '/db/st', 'copied.xml')"));
+        assertTrue(messages(copy).contains("EXSA0004"), messages(copy));
+        assertNull(broker.getCollection(ST).getDocument(broker, XmldbURI.create("copied.xml")), "no document may be left behind by a rejected copy");
+
+        final Exception move = assertThrows(Exception.class, () -> xquery("xmldb:move('/db/st-plain', '/db/st', 'bad.xml')"));
+        assertTrue(messages(move).contains("EXSA0004"), messages(move));
+        assertNull(broker.getCollection(ST).getDocument(broker, XmldbURI.create("bad.xml")));
+        assertNotNull(broker.getCollection(PLAIN).getDocument(broker, XmldbURI.create("bad.xml")), "the source of a rejected move stays");
+
+        // a valid document can be copied
+        store(PLAIN, "ok.xml", fixture("trade-1.xml"));
+        xquery("xmldb:copy-resource('/db/st-plain', 'ok.xml', '/db/st', 'ok.xml')");
+        assertTyped("/db/st/ok.xml");
+    }
+
+    @Test
+    void updateBelowTheRootElementIsRejected() throws Exception {
+        // the reindex root of a change directly below the root element is the root: the pass starts at the document
+        configure(XCONF_REJECT);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        final String before = xquery("count(doc('/db/st/t1.xml')//t:trade)").itemAt(0).getStringValue();
+
+        final Exception e = assertThrows(Exception.class,
+                () -> xquery("update insert <t:bogus xmlns:t='" + T_NS + "'/> into doc('/db/st/t1.xml')/t:trades"));
+        assertTrue(messages(e).contains("EXSA0004"), messages(e));
+        assertEquals(before, xquery("count(doc('/db/st/t1.xml')//t:trade)").itemAt(0).getStringValue());
+        assertEquals("0", xquery("count(doc('/db/st/t1.xml')//t:bogus)").itemAt(0).getStringValue());
+        assertEquals(DocMeta.DocStatus.TYPED, docMeta("t1.xml").status());
+        assertTyped("/db/st/t1.xml");
+    }
+
+    @Test
+    void automaticReindexLeavesDescendantsWithTheirOwnConfigurationAlone() throws Exception {
+        configure(XCONF_AUTO);
+        store(CONF_CHILD, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        store(CHILD, "c1.xml", fixture("trade-1.xml"));
+        final DocMeta childBefore = index().store().getDocMeta(broker.getCollection(CHILD).getDocument(broker, XmldbURI.create("c1.xml")).getDocId());
+        assertNotNull(childBefore);
+
+        modifyXsd();
+        ConfigReloader.reloadFromStorage(broker, CONF);
+        awaitTyped("/db/st/t1.xml");
+        await(() -> index().reindexIdle());
+
+        final DocMeta childAfter = index().store().getDocMeta(broker.getCollection(CHILD).getDocument(broker, XmldbURI.create("c1.xml")).getDocId());
+        assertEquals(childBefore, childAfter, "a descendant with its own configuration is not governed by the parent's");
+        assertNotEquals(docMeta("t1.xml").indexedWith(), childAfter.indexedWith());
+    }
+
+    @Test
+    void failedReindexIsScheduledAgainByALaterStaleQuery() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        modifyXsd();
+        ConfigReloader.reloadFromStorage(broker, CONF);
+        index().reindexRetryMillis = 0;
+        index().failNextReindex = true;
+        final int scheduledBefore = index().scheduledReindexCount();
+
+        awaitTyped("/db/st/t1.xml");
+
+        assertTrue(index().scheduledReindexCount() >= scheduledBefore + 2, "the failed reindex must have been scheduled again");
+    }
+
+    @Test
+    void failedReindexIsNotPromisedNorRetriedBeforeTheBackOff() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        modifyXsd();
+        ConfigReloader.reloadFromStorage(broker, CONF);
+        index().reindexRetryMillis = 3_600_000;
+        index().failNextReindex = true;
+        final int scheduledBefore = index().scheduledReindexCount();
+
+        final XPathException first = assertThrows(XPathException.class, () -> assertTyped("/db/st/t1.xml"));
+        assertEquals("EXSA0003", first.getErrorCode().getErrorQName().getLocalPart());
+        await(() -> index().reindexIdle());
+        Thread.sleep(100);
+        final XPathException later = assertThrows(XPathException.class, () -> assertTyped("/db/st/t1.xml"));
+        assertFalse(later.getMessage().contains("pending"), later.getMessage());
+        assertEquals(scheduledBefore + 1, index().scheduledReindexCount());
+    }
+
+    @Test
+    void unavailableSchemaLookupsAreRateLimited() {
+        assertTrue(index().mayRetryLoad(4711));
+        assertFalse(index().mayRetryLoad(4711));
+        index().markAvailable(4711);
+        assertTrue(index().mayRetryLoad(4711));
+        index().markAvailable(4711);
+    }
+
+    @Test
+    void storingConfigurationsAndDocumentsConcurrentlyDoesNotHang() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        final String trade = fixture("trade-1.xml");
+        final ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            final Future<Void> configs = executor.submit(() -> {
+                try (final DBBroker b = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+                    for (int i = 0; i < 10; i++) {
+                        storeWith(b, SCHEMAS, "trade.xsd", fixture("trade.xsd").replaceFirst("(?s)(<xs:schema[^>]*>)", "$1<!-- change " + i + " -->"));
+                        storeWith(b, CONF, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_AUTO);
+                    }
+                }
+                return null;
+            });
+            final Future<Void> docs = executor.submit(() -> {
+                try (final DBBroker b = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+                    for (int i = 0; i < 20; i++) {
+                        storeWith(b, ST, "d" + i + ".xml", trade);
+                    }
+                }
+                return null;
+            });
+            configs.get(90, java.util.concurrent.TimeUnit.SECONDS);
+            docs.get(90, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            executor.shutdownNow();
+        }
+        await(() -> index().reindexIdle());
+    }
+
+    @Test
     void annotationsAndTypeIdsSurviveRestart() throws Exception {
         configure(XCONF_OK);
         store(ST, "t1.xml", fixture("trade-1.xml"));
@@ -367,6 +502,28 @@ public class SchemaTypeFailureModesTest {
     private void modifyXsd() throws Exception {
         Thread.sleep(5);    // a distinct last-modified time
         store(SCHEMAS, "trade.xsd", fixture("trade.xsd").replaceFirst("(?s)(<xs:schema[^>]*>)", "$1<!-- a compatible change -->"));
+    }
+
+    private void awaitTyped(final String docPath) throws Exception {
+        final long deadline = System.nanoTime() + 10_000_000_000L;
+        while (true) {
+            try {
+                assertTyped(docPath);
+                return;
+            } catch (final XPathException e) {
+                assertEquals("EXSA0003", e.getErrorCode().getErrorQName().getLocalPart(), e.getMessage());
+                assertTrue(System.nanoTime() < deadline, "not reindexed in time: " + e.getMessage());
+                Thread.sleep(20);
+            }
+        }
+    }
+
+    private void await(final java.util.function.BooleanSupplier condition) throws Exception {
+        final long deadline = System.nanoTime() + 10_000_000_000L;
+        while (!condition.getAsBoolean()) {
+            assertTrue(System.nanoTime() < deadline, "timed out");
+            Thread.sleep(20);
+        }
     }
 
     private void restartServer() throws Exception {

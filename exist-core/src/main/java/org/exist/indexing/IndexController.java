@@ -72,6 +72,7 @@ public class IndexController {
     private DocumentImpl currentDoc = null;
     private ReindexMode currentMode = ReindexMode.UNKNOWN;
     private boolean reindexing;
+    private boolean explicitReindex;
     private ReindexScope reindexScope = ReindexScope.ALL;
 
     public IndexController(final DBBroker broker) {
@@ -300,14 +301,34 @@ public class IndexController {
      * @param scope   the reindex scope (all, fulltext, or vector)
      */
     public void runWithReindexing(final Runnable runnable, final ReindexScope scope) {
+        runWithReindexing(runnable, scope, true);
+    }
+
+    /**
+     * As {@link #runWithReindexing(Runnable, ReindexScope)}.
+     *
+     * @param explicit true if the user asked to reindex (index workers may then tolerate content they would reject
+     *                 when it is stored or changed); false for an internal re-streaming, e.g. when moving a document
+     */
+    public void runWithReindexing(final Runnable runnable, final ReindexScope scope, final boolean explicit) {
         setReindexing(true);
         setReindexScope(scope);
+        explicitReindex = explicit;
         try {
             runnable.run();
         } finally {
+            explicitReindex = false;
             setReindexScope(ReindexScope.ALL);
             setReindexing(false);
         }
+    }
+
+    /**
+     * @return true while documents are being reindexed on request (a reindex or repair of a collection or document),
+     *         as opposed to being stored, copied, moved or updated
+     */
+    public boolean isExplicitReindex() {
+        return explicitReindex;
     }
 
     /**

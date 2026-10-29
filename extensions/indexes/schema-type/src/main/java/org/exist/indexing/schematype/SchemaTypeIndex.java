@@ -89,15 +89,26 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     private final Set<Integer> collectionsWithMeta = ConcurrentHashMap.newKeySet();
     /** collections whose schema failed to load, with the reason: a store failed with EXSA0002 */
     private final ConcurrentHashMap<Integer, String> unavailable = new ConcurrentHashMap<>();
-    /** (collection, schema key) pairs for which an automatic reindex has been scheduled */
-    private final Set<ReindexKey> scheduledReindexes = ConcurrentHashMap.newKeySet();
-    private final java.util.concurrent.atomic.AtomicInteger scheduledReindexCount = new java.util.concurrent.atomic.AtomicInteger();
-    private java.util.concurrent.ExecutorService reindexExecutor;
-
-    private record ReindexKey(int collectionId, SchemaKey schema) {
-    }
     /** unstable type ids already reported */
     private final Set<String> reportedUnstable = ConcurrentHashMap.newKeySet();
+    /** the automatic reindex pending or last failed, per collection; updated atomically */
+    private final ConcurrentHashMap<Integer, ReindexState> reindexes = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicInteger scheduledReindexCount = new java.util.concurrent.atomic.AtomicInteger();
+    private java.util.concurrent.ExecutorService reindexExecutor;
+    /** when a collection's schema was last looked up while it was unavailable (milliseconds), to rate-limit retries */
+    private final ConcurrentHashMap<Integer, Long> lastLoadAttempt = new ConcurrentHashMap<>();
+
+    /** how soon a queried collection with an unavailable schema tries to load it again */
+    static final long UNAVAILABLE_RETRY_MILLIS = 30_000;
+    /** how soon a failed automatic reindex is scheduled again by a stale query */
+    static final long DEFAULT_REINDEX_RETRY_MILLIS = 60_000;
+    volatile long reindexRetryMillis = DEFAULT_REINDEX_RETRY_MILLIS;
+    /** test seam: the next automatic reindex fails */
+    volatile boolean failNextReindex;
+
+    /** failedAt is 0 while the reindex for the key is pending, else when it failed */
+    private record ReindexState(SchemaKey schema, long failedAt) {
+    }
 
     @Override
     public void configure(final BrokerPool pool, final Path dataDir, final Element config) throws DatabaseConfigurationException {
@@ -260,12 +271,14 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
         if (!unavailable.isEmpty()) {
             unavailable.remove(collectionId);
         }
+        lastLoadAttempt.remove(collectionId);
     }
 
     /**
      * @return true if the collection was not marked before (so the failure is logged once)
      */
     boolean markUnavailable(final int collectionId, final String reason) {
+        lastLoadAttempt.put(collectionId, System.currentTimeMillis());
         return unavailable.put(collectionId, reason) == null;
     }
 
@@ -279,42 +292,113 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
 
     /**
      * Schedule the asynchronous reindex of a collection whose schema key changed, at most once per
-     * (collection, schema key). It runs on a background thread as {@code subject} (the owner of the collection
-     * configuration, who configured the schema), not as the user whose query found the index stale.
+     * (collection, schema key) while it is pending, and again only after a failure and a back-off. It runs on a
+     * background thread as {@code subject} (the owner of the collection configuration, or for a stored configuration
+     * the storing user), never as the user whose query found the index stale.
      *
-     * @return true if it was scheduled by this call
+     * @return true if a reindex for this key is pending (scheduled now or before), false if none is
      */
     boolean scheduleReindex(final org.exist.collections.Collection collection, final SchemaKey key, @Nullable final Subject subject) {
-        final int collectionId = collection.getId();
-        final ReindexKey reindexKey = new ReindexKey(collectionId, key);
-        if (!scheduledReindexes.add(reindexKey)) {
+        if (subject == null || pool.isShuttingDownOrDown()) {
             return false;
         }
-        scheduledReindexes.removeIf(k -> k.collectionId() == collectionId && !k.equals(reindexKey));
-        scheduledReindexCount.incrementAndGet();
-        final XmldbURI uri = collection.getURI();
-        synchronized (this) {
-            if (reindexExecutor == null) {
-                reindexExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
-                    final Thread thread = new Thread(pool.getThreadGroup(), r, "schema-type-reindex");
-                    thread.setDaemon(true);
-                    return thread;
-                });
+        final int collectionId = collection.getId();
+        final long now = System.currentTimeMillis();
+        final boolean[] pending = {false};
+        final boolean[] submit = {false};
+        reindexes.compute(collectionId, (id, current) -> {
+            if (current != null && current.schema().equals(key)) {
+                if (current.failedAt() == 0) {
+                    pending[0] = true;
+                    return current;
+                }
+                if (now - current.failedAt() < reindexRetryMillis) {
+                    return current;     // failed recently: not pending, not retried yet
+                }
             }
-            reindexExecutor.execute(() -> reindex(uri, subject));
+            pending[0] = true;
+            submit[0] = true;
+            return new ReindexState(key, 0);
+        });
+        if (submit[0]) {
+            scheduledReindexCount.incrementAndGet();
+            final XmldbURI uri = collection.getURI();
+            try {
+                synchronized (this) {
+                    if (reindexExecutor == null) {
+                        reindexExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                            final Thread thread = new Thread(pool.getThreadGroup(), r, "schema-type-reindex");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+                    }
+                    reindexExecutor.execute(() -> reindex(collectionId, key, uri, subject));
+                }
+            } catch (final java.util.concurrent.RejectedExecutionException e) {
+                finishReindex(collectionId, key, true);
+                return false;
+            }
         }
-        return true;
+        return pending[0];
     }
 
-    private void reindex(final XmldbURI uri, @Nullable final Subject subject) {
-        try (final DBBroker broker = pool.get(Optional.ofNullable(subject));
-             final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            LOG.info("The schema of collection {} changed: reindexing it", uri);
-            broker.reindexCollection(txn, uri);
-            txn.commit();
+    private void reindex(final int collectionId, final SchemaKey key, final XmldbURI uri, final Subject subject) {
+        boolean failed = true;
+        try {
+            if (pool.isShuttingDownOrDown()) {
+                return;
+            }
+            if (failNextReindex) {
+                failNextReindex = false;
+                throw new IllegalStateException("reindex failure forced by a test");
+            }
+            try (final DBBroker broker = pool.get(Optional.of(subject));
+                 final Txn txn = pool.getTransactionManager().beginTransaction()) {
+                LOG.info("The schema of collection {} changed: reindexing its schema type index", uri);
+                final SchemaTypeIndexWorker worker = (SchemaTypeIndexWorker) broker.getIndexController().getWorkerByIndexId(ID);
+                final int skipped = worker.reindexGoverned(uri, txn);
+                txn.commit();
+                failed = skipped > 0;
+                if (failed) {
+                    LOG.warn("The reindex of collection {} left out {} document(s) or collection(s)", uri, skipped);
+                }
+            }
         } catch (final Exception e) {
             LOG.error("Error reindexing collection {} after a schema change: {}", uri, e.getMessage(), e);
+        } finally {
+            finishReindex(collectionId, key, failed);
         }
+    }
+
+    private void finishReindex(final int collectionId, final SchemaKey key, final boolean failed) {
+        reindexes.computeIfPresent(collectionId, (id, current) -> {
+            if (!current.schema().equals(key)) {
+                return current;     // superseded by a reindex for another key
+            }
+            return failed ? new ReindexState(key, System.currentTimeMillis()) : null;
+        });
+    }
+
+    /**
+     * @return true if the schema of a collection that is unavailable may be looked up again now (at most every
+     *     {@link #UNAVAILABLE_RETRY_MILLIS}); records the attempt
+     */
+    boolean mayRetryLoad(final int collectionId) {
+        final long now = System.currentTimeMillis();
+        final boolean[] allowed = {false};
+        lastLoadAttempt.compute(collectionId, (id, last) -> {
+            if (last == null || now - last >= UNAVAILABLE_RETRY_MILLIS) {
+                allowed[0] = true;
+                return now;
+            }
+            return last;
+        });
+        return allowed[0];
+    }
+
+    /** @return true if no automatic reindex is pending (for tests) */
+    boolean reindexIdle() {
+        return reindexes.values().stream().noneMatch(state -> state.failedAt() == 0);
     }
 
     /** @return how many automatic reindexes were scheduled (for tests) */

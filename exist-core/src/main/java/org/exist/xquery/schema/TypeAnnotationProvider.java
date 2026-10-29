@@ -124,6 +124,14 @@ public interface TypeAnnotationProvider {
     }
 
     /**
+     * Called around the loading of a stored collection configuration: the subject its schema documents are read as.
+     *
+     * @param owner the owner of the configuration document, null if it cannot be determined (and after the loading)
+     */
+    default void setConfigurationOwner(@Nullable final org.exist.security.Subject owner) {
+    }
+
+    /**
      * Get the provider of a broker.
      *
      * @param broker the broker
