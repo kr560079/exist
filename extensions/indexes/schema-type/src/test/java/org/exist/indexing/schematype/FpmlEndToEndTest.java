@@ -21,8 +21,6 @@
  */
 package org.exist.indexing.schematype;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.exist.collections.Collection;
 import org.exist.collections.CollectionConfiguration;
 import org.exist.storage.BrokerPool;
@@ -39,22 +37,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -66,13 +55,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * the schema type index and typed values.
  *
  * <p>The FpML archive is downloaded by the build (see {@code src/test/resources/fpml/README.md}) and verified
- * (SHA-256) and unpacked here; the tests are skipped when it is not there ({@code -Dfpml.skip=true}, {@code
+ * (SHA-256) and unpacked by {@link FpmlCorpus}; the tests are skipped when it is not there ({@code -Dfpml.skip=true}, {@code
  * -DskipTests}, offline) or does not match the pinned checksum. Every expected value is computed from the
  * documents by a query that does not use the schema (names, string values and explicit casts only).</p>
  */
 public class FpmlEndToEndTest {
-
-    private static final Logger LOG = LogManager.getLogger(FpmlEndToEndTest.class);
 
     private static final String CC = "http://exist-db.org/collection-config/1.0";
     private static final String FPML_NS = "http://www.fpml.org/FpML-5/confirmation";
@@ -120,37 +107,11 @@ public class FpmlEndToEndTest {
 
     @BeforeAll
     static void storeCorpus() throws Exception {
-        final String dir = System.getProperty("fpml.dir");
-        final String archive = System.getProperty("fpml.archive");
-        final String sha256 = System.getProperty("fpml.sha256");
-        version = System.getProperty("fpml.version", "5-12");
-        assumeTrue(dir != null && archive != null && sha256 != null,
-                "FpML tests skipped: system properties fpml.dir, fpml.archive and fpml.sha256 are not set (run through Maven)");
-        final Path zip = Paths.get(archive);
-        assumeTrue(Files.isRegularFile(zip), "FpML tests skipped: the FpML " + version + " archive " + zip
-                + " is not there (downloaded by the build from " + System.getProperty("fpml.url")
-                + " unless -Dfpml.skip=true, -DskipTests or offline)");
-        // nothing of an earlier extraction is used, whatever the outcome
-        final Path unpacked = Paths.get(dir).resolve("unpacked");
-        delete(unpacked);
-        final String actual = sha256(zip);
-        if (!actual.equalsIgnoreCase(sha256.trim())) {
-            final String message = "FpML tests skipped: FpML archive checksum mismatch for " + zip + ": expected SHA-256 "
-                    + sha256 + " but got " + actual + ". The archive was not used. If ISDA republished the file at "
-                    + System.getProperty("fpml.url") + ", check it and update fpml.sha256 in "
-                    + "extensions/indexes/schema-type/pom.xml (and delete the cached download).";
-            LOG.warn(message);
-            System.err.println("WARNING: " + message);
-            assumeTrue(false, message);
-        }
-        fpmlDir = unpack(zip, unpacked).resolve("confirmation");
-        assumeTrue(Files.isRegularFile(fpmlDir.resolve("fpml-main-" + version + ".xsd")),
-                "FpML tests skipped: no fpml-main-" + version + ".xsd in the archive " + zip);
-
-        try (final Stream<Path> files = Files.walk(fpmlDir.resolve("products"))) {
-            files.filter(p -> p.toString().endsWith(".xml")).sorted().forEach(examples::add);
-        }
-        assumeTrue(examples.size() >= 20, "FpML tests skipped: fewer than 20 examples in " + fpmlDir);
+        final FpmlCorpus corpus = FpmlCorpus.locate("unpacked");
+        assumeTrue(corpus.available(), () -> "FpML tests skipped: " + corpus.unavailableReason());
+        fpmlDir = corpus.dir();
+        version = corpus.version();
+        examples.addAll(corpus.examples());
 
         final BrokerPool pool = existEmbeddedServer.getBrokerPool();
         try (final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
@@ -413,58 +374,6 @@ public class FpmlEndToEndTest {
 
     private static String string(final String query) throws Exception {
         return query(query).getStringValue();
-    }
-
-    // --- the archive ---
-
-    private static String sha256(final Path file) throws Exception {
-        final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        try (final InputStream is = Files.newInputStream(file)) {
-            final byte[] buffer = new byte[65536];
-            for (int n; (n = is.read(buffer)) > 0; ) {
-                digest.update(buffer, 0, n);
-            }
-        }
-        return HexFormat.of().formatHex(digest.digest());
-    }
-
-    /**
-     * Unpacks the schemas and the product examples of the (verified) archive into the emptied target directory, so
-     * that nothing of an earlier extraction is used; an entry whose path leaves the target is rejected.
-     */
-    private static Path unpack(final Path zip, final Path target) throws IOException {
-        delete(target);
-        final Path root = Files.createDirectories(target).toAbsolutePath().normalize();
-        try (final ZipFile zipFile = new ZipFile(zip.toFile())) {
-            for (final ZipEntry entry : Collections.list(zipFile.entries())) {
-                final String name = entry.getName();
-                final Path out = root.resolve(name).normalize();
-                if (!out.startsWith(root)) {
-                    throw new IOException("FpML archive entry " + name + " leaves the target directory");
-                }
-                final boolean schema = name.startsWith("confirmation/") && name.endsWith(".xsd")
-                        && name.indexOf('/', "confirmation/".length()) < 0;
-                final boolean example = name.startsWith("confirmation/products/") && name.endsWith(".xml");
-                if (entry.isDirectory() || !(schema || example)) {
-                    continue;
-                }
-                Files.createDirectories(out.getParent());
-                try (final InputStream is = zipFile.getInputStream(entry)) {
-                    Files.copy(is, out);
-                }
-            }
-        }
-        return root;
-    }
-
-    private static void delete(final Path dir) throws IOException {
-        if (Files.exists(dir)) {
-            try (final Stream<Path> old = Files.walk(dir)) {
-                for (final Path p : old.sorted(Comparator.reverseOrder()).toList()) {
-                    Files.delete(p);
-                }
-            }
-        }
     }
 
     // --- storage ---

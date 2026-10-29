@@ -103,3 +103,22 @@ jobs:
         with:
           path: ~/.m2
           key: maven-${{ github.ref_name }}-${{ hashFiles('**/pom.xml') }}
+
+      # Plain JUnit benchmarks, run explicitly like NGramContainsBenchmark
+      # (not *Test, so normal builds skip them). They use the FpML examples the
+      # module's build downloads (extensions/indexes/schema-type/README.md),
+      # or the trade fixture when the download is not available.
+      # SchemaTypeStoreBenchmark fails the step when storing into a collection
+      # with <schema-type> defaults costs more than 25% over no schema type
+      # index (spec §9.6); run last so the steps above are not skipped.
+      - name: Build schema-type index
+        run: >
+          mvn -B install -pl extensions/indexes/schema-type -am -DskipTests
+          -Ddependency-check.skip=true -Ddocker=false
+
+      - name: Run schema-type store and query benchmarks
+        run: >
+          mvn -B test -pl extensions/indexes/schema-type
+          -Dtest='SchemaTypeStoreBenchmark,SchemaTypeQueryBenchmark'
+          -Dsurefire.failIfNoSpecifiedTests=false -Dexist.run.benchmarks=true
+          -Ddependency-check.skip=true -Ddocker=false
