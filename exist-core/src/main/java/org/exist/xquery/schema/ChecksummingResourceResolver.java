@@ -22,6 +22,7 @@
 package org.exist.xquery.schema;
 
 import org.apache.xerces.dom.DOMInputImpl;
+import org.exist.collections.Collection;
 import org.exist.dom.persistent.BinaryDocument;
 import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.LockedDocument;
@@ -29,6 +30,7 @@ import org.exist.security.PermissionDeniedException;
 import org.exist.storage.DBBroker;
 import org.exist.storage.lock.Lock.LockMode;
 import org.exist.storage.serializers.Serializer;
+import org.exist.util.LockException;
 import org.exist.xmldb.XmldbURI;
 import org.w3c.dom.ls.LSInput;
 import org.w3c.dom.ls.LSResourceResolver;
@@ -42,6 +44,9 @@ import java.io.Reader;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
@@ -104,6 +109,72 @@ class ChecksummingResourceResolver implements LSResourceResolver {
     /** @return true if some dependency (catalog, file or remote) cannot be cheaply re-validated */
     boolean uncheckable() {
         return uncheckable;
+    }
+
+    /**
+     * The last-modified times of the database documents of a schema, grouped by collection with their URIs parsed
+     * once, so that checking whether they are still current opens each collection once (instead of parsing,
+     * resolving and opening the collection of every document on every check).
+     */
+    static final class DatabaseVersions {
+
+        private record Dependency(XmldbURI name, long version) {
+        }
+
+        /** collection URI to the documents in it; null if some id is not a database document */
+        private final @Nullable Map<XmldbURI, List<Dependency>> byCollection;
+
+        DatabaseVersions(final Map<String, Long> versions) {
+            Map<XmldbURI, List<Dependency>> groups = new LinkedHashMap<>();
+            for (final Map.Entry<String, Long> version : versions.entrySet()) {
+                final String path = stripXmldbScheme(version.getKey());
+                if (path == null) {
+                    // never current, as databaseVersion(): -1
+                    groups = null;
+                    break;
+                }
+                XmldbURI uri;
+                try {
+                    uri = XmldbURI.create(path).toCollectionPathURI();
+                } catch (final IllegalArgumentException e) {
+                    groups = null;
+                    break;
+                }
+                if (!uri.startsWith(XmldbURI.ROOT_COLLECTION_URI)) {
+                    uri = XmldbURI.ROOT_COLLECTION_URI.append(uri);
+                }
+                groups.computeIfAbsent(uri.removeLastSegment(), k -> new ArrayList<>())
+                        .add(new Dependency(uri.lastSegment(), version.getValue()));
+            }
+            this.byCollection = groups;
+        }
+
+        /**
+         * @return true if every document still exists, is readable by the current subject (as for
+         * {@link #databaseVersion}) and has the recorded last-modified time
+         */
+        boolean areCurrent(final DBBroker broker) {
+            if (byCollection == null) {
+                return false;
+            }
+            for (final Map.Entry<XmldbURI, List<Dependency>> group : byCollection.entrySet()) {
+                try (final Collection collection = broker.openCollection(group.getKey(), LockMode.READ_LOCK)) {
+                    if (collection == null) {
+                        return false;
+                    }
+                    for (final Dependency dependency : group.getValue()) {
+                        try (final LockedDocument locked = collection.getDocumentWithLock(broker, dependency.name(), LockMode.READ_LOCK)) {
+                            if (locked == null || locked.getDocument().getLastModified() != dependency.version()) {
+                                return false;
+                            }
+                        }
+                    }
+                } catch (final PermissionDeniedException | LockException | RuntimeException e) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     /** @return the last-modified time of the database document {@code id}, or -1 if it is not readable */

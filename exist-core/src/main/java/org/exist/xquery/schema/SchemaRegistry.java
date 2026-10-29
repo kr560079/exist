@@ -113,14 +113,14 @@ public class SchemaRegistry implements BrokerPoolService {
     }
 
     /** The key a location resolved to, and the version of every database document it depended on. */
-    private record MemoEntry(SchemaKey key, Map<String, Long> versions) {
+    private record MemoEntry(SchemaKey key, Map<String, Long> versions, ChecksummingResourceResolver.DatabaseVersions check) {
+        MemoEntry(final SchemaKey key, final Map<String, Long> versions) {
+            this(key, versions, new ChecksummingResourceResolver.DatabaseVersions(versions));
+        }
+
+        /** checked on every use of the memo (each store into a configured collection): one open per collection */
         boolean isCurrent(final DBBroker broker) {
-            for (final Map.Entry<String, Long> dep : versions.entrySet()) {
-                if (ChecksummingResourceResolver.databaseVersion(broker, dep.getKey()) != dep.getValue()) {
-                    return false;
-                }
-            }
-            return true;
+            return check.areCurrent(broker);
         }
     }
 
