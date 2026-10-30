@@ -90,3 +90,15 @@ declare %test:assertEquals(0) function a:nilled-value-compare-predicate() { coun
 declare %test:assertFalse function a:nilled-general-compare() { $a:doc//t:tradeId = "" };
 declare %test:assertEmpty function a:nilled-arithmetic() { $a:doc//t:tradeId * 2 };
 declare %test:assertEquals(1, 2, 3) function a:nilled-order-by-empty-least() { for $t at $p in $a:doc//t:trade order by $t/t:tradeId empty least, $p return $p };
+
+(: a user-defined function's atomic return type atomizes before it checks the cardinality :)
+declare %private function a:as-date($n as node()*) as xs:date { $n };
+declare %private function a:as-dates($n as node()*) as xs:date* { $n };
+declare %private function a:as-optional-string($n as node()*) as xs:string? { $n };
+declare %private function a:as-string($n as node()*) as xs:string { $n };
+declare %test:assertError("XPTY0004") function a:list-single-item-return() { a:as-date($a:doc//t:fixingDates) };
+declare %test:assertEquals(2) function a:list-sequence-return() { count(a:as-dates($a:doc//t:fixingDates)) };
+declare %test:assertTrue function a:list-sequence-return-typed() { every $d in a:as-dates($a:doc//t:fixingDates) satisfies $d instance of xs:date };
+declare %test:assertEquals("2026-03-02") function a:typed-single-item-return() { string(a:as-date($a:doc//t:tradeDate)) };
+declare %test:assertError("XPTY0004") function a:nilled-exactly-one-return() { a:as-string($a:doc//t:tradeId) };
+declare %test:assertEmpty function a:nilled-optional-return() { a:as-optional-string($a:doc//t:tradeId) };

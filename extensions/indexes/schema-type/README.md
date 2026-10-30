@@ -133,9 +133,10 @@ value comparisons, `order by`, `group by`, `distinct-values`, arithmetic and fun
 - A nilled element gives the empty sequence.
 - A list-typed node with several items gives all of them. A context that takes a single atomic value raises
   `XPTY0004` for it, as for any sequence of more than one item: value comparisons (`eq`, `lt`, ...), arithmetic,
-  `cast`, `order by`, `group by`, `switch`, and function parameters that take at most one item. General comparisons
+  `cast`, `order by`, `group by`, `switch`, function parameters that take at most one item, and the values returned by
+  a function declared to return at most one atomic value. General comparisons
   (`=`) and functions that take a sequence (`sum`, `count`) work on every item. A nilled element is empty in all of
-  these: `$nilled eq 'x'` is empty, and a parameter that requires exactly one item raises `XPTY0004`.
+  these: `$nilled eq 'x'` is empty, and a parameter or return type that requires exactly one item raises `XPTY0004`.
 - Mixed content gives `xs:untypedAtomic`.
 - Element-only content raises `FOTY0012`.
 - A node without an annotation gives `xs:untypedAtomic`, as before.
@@ -335,6 +336,11 @@ These follow the XQuery 3.1 specification. Queries that relied on the old, lenie
   not only before. A list-typed node, or an array, with several items now raises `XPTY0004` there; before, the
   function silently used the first item. A nilled element passed to a parameter that requires exactly one item
   raises `XPTY0004` too. Backwards compatible (XPath 1.0) mode still takes the first item.
+- The same holds for the value a user-defined function returns: with an atomic return type, the result is atomized
+  first and its number of items checked after. A function declared `as xs:T` (or `as xs:T?`) that returns a
+  list-typed node or an array with several items now raises `XPTY0004`, where before it returned all of them; one
+  declared `as xs:T` that returns a nilled element (or an empty array) raises `XPTY0004`, where before it returned the
+  empty sequence. Backwards compatible mode is unchanged.
 
 ### Index layout
 

@@ -91,26 +91,44 @@ public class FunctionCall extends Function {
         setSignature(functionDef.getSignature());
         this.expression = this.functionDef;
         this.functionDef.setCaller(this);
-        final SequenceType returnType = this.functionDef.getSignature().getReturnType();
-        
-        // add return type checks
-        if(returnType.getCardinality() != Cardinality.ZERO_OR_MORE) {
-                expression = new DynamicCardinalityCheck(context, returnType.getCardinality(), expression, new Error(Error.FUNC_RETURN_CARDINALITY));
+        this.expression = addReturnTypeChecks(context, this.functionDef.getSignature().getReturnType(), this.expression);
+    }
+
+    /**
+     * Wrap a function body in the checks of its declared return type.
+     *
+     * For an atomic return type the result is atomized before its cardinality is checked, as the function
+     * conversion rules require: atomizing a node with a list type (or an array) can give several items, and a
+     * nilled element gives none, so checking the body's cardinality first would let a function declared
+     * {@code as xs:T} return a sequence or the empty sequence. In backwards compatible mode the cardinality is
+     * still checked on the body, as before.
+     */
+    private static Expression addReturnTypeChecks(final XQueryContext context, final SequenceType returnType,
+            Expression expression) {
+        final boolean atomic = Type.subTypeOf(returnType.getPrimaryType(), Type.ANY_ATOMIC_TYPE);
+        final boolean checkCardinality = returnType.getCardinality() != Cardinality.ZERO_OR_MORE;
+        final boolean atomizeFirst = atomic && !context.isBackwardsCompatible();
+
+        if (atomizeFirst) {
+            expression = new Atomize(context, expression);
         }
-        
-        if(Type.subTypeOf(returnType.getPrimaryType(), Type.ANY_ATOMIC_TYPE)) {
-                expression = new Atomize(context, expression);
+        if (checkCardinality) {
+            expression = new DynamicCardinalityCheck(context, returnType.getCardinality(), expression, new Error(Error.FUNC_RETURN_CARDINALITY));
         }
-        
-        if(Type.subTypeOfUnion(returnType.getPrimaryType(), Type.NUMERIC)) {
-                expression = new UntypedValueCheck(context, returnType.getPrimaryType(), expression, new Error(Error.FUNC_RETURN_TYPE));
-        } else if(returnType.getPrimaryType() != Type.ITEM) {
-                expression = new DynamicTypeCheck(context, returnType.getPrimaryType(), expression);
+        if (atomic && !atomizeFirst) {
+            expression = new Atomize(context, expression);
+        }
+
+        if (Type.subTypeOfUnion(returnType.getPrimaryType(), Type.NUMERIC)) {
+            expression = new UntypedValueCheck(context, returnType.getPrimaryType(), expression, new Error(Error.FUNC_RETURN_TYPE));
+        } else if (returnType.getPrimaryType() != Type.ITEM) {
+            expression = new DynamicTypeCheck(context, returnType.getPrimaryType(), expression);
         }
         // === Schema Aware Feature ===
         if (DynamicAnnotationCheck.isNeeded(returnType)) {
             expression = new DynamicAnnotationCheck(context, returnType, expression);
         }
+        return expression;
     }
 
     public UserDefinedFunction getFunction() {
@@ -385,28 +403,7 @@ public class FunctionCall extends Function {
             //this.mySignature = this.functionDef.getSignature();
             this.expression = this.functionDef;
             this.functionDef.setCaller(call);
-            final SequenceType returnType = this.functionDef.getSignature().getReturnType();
-
-            final XQueryContext context = call.context;
-
-            // add return type checks
-            if(returnType.getCardinality() != Cardinality.ZERO_OR_MORE) {
-                expression = new DynamicCardinalityCheck(context, returnType.getCardinality(), expression, new Error(Error.FUNC_RETURN_CARDINALITY));
-            }
-
-            if(Type.subTypeOf(returnType.getPrimaryType(), Type.ANY_ATOMIC_TYPE)) {
-                expression = new Atomize(context, expression);
-            }
-
-            if(Type.subTypeOfUnion(returnType.getPrimaryType(), Type.NUMERIC)) {
-                expression = new UntypedValueCheck(context, returnType.getPrimaryType(), expression, new Error(Error.FUNC_RETURN_TYPE));
-            } else if(returnType.getPrimaryType() != Type.ITEM) {
-                expression = new DynamicTypeCheck(context, returnType.getPrimaryType(), expression);
-            }
-            // === Schema Aware Feature ===
-            if (DynamicAnnotationCheck.isNeeded(returnType)) {
-                expression = new DynamicAnnotationCheck(context, returnType, expression);
-            }
+            this.expression = addReturnTypeChecks(call.context, this.functionDef.getSignature().getReturnType(), this.expression);
         }
         
         @Override
