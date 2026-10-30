@@ -514,32 +514,6 @@ public class SchemaTypeIndexTest {
     }
 
     @Test
-    void legacyTypedValueRowsAreRemoved() throws Exception {
-        final int docId = doc(ST, "t1.xml").getDocId();
-        final NodeProxy amount = node("/db/st/t1.xml", "/t:trade/t:notional/t:amount");
-        final short lt = localTypeId(code("NonNegativeDecimal"));
-        final byte[] key = TypedKeys.decimalKey(java.math.BigDecimal.valueOf(100));
-        final int baseline = index().store().legacyTypedValueRowCount();
-        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            index().store().putLegacyTypedValue(lt, key, docId, amount.getNodeId());
-            txn.commit();
-        }
-        assertEquals(baseline + 1, index().store().legacyTypedValueRowCount());
-        // a subtree update of the document removes them
-        query("update value doc('/db/st/t1.xml')/t:trade/t:notional/t:amount with '101'");
-        assertEquals(baseline, index().store().legacyTypedValueRowCount());
-        // and so does the removal of the document
-        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
-            index().store().putLegacyTypedValue(lt, key, docId, amount.getNodeId());
-            txn.commit();
-        }
-        assertEquals(baseline + 1, index().store().legacyTypedValueRowCount());
-        query("xmldb:remove('/db/st', 't1.xml')");
-        assertEquals(baseline, index().store().legacyTypedValueRowCount());
-        assertEquals(0, index().store().rowCountByScan(docId));
-    }
-
-    @Test
     void collectionMoveKeepsTypedValues() throws Exception {
         // bad.xml has unannotated amounts: a query over it is not answered from the index
         final String path = "//t:notional[t:amount > 50]";

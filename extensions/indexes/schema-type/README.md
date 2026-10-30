@@ -253,7 +253,6 @@ The index stores, for each document, the checksum of the schema it was indexed w
 
 - after changing its schema (any XSD of the schema) or its `<schema-type>` / `<typed-values>` configuration;
 - after storing documents or XSDs into it before configuring it (see [Where to store the schemas](#where-to-store-the-schemas));
-- after upgrading from a build with an older index layout (see the [release notes](#compatibility-and-release-notes));
 - whenever `schema:status` reports `stale`, or queries raise `EXSA0003`.
 
 Run the reindex as a user who may reindex the collection:
@@ -347,25 +346,11 @@ These follow the XQuery 3.1 specification. Queries that relied on the old, lenie
   declared `as xs:T` that returns a nilled element (or an empty array) raises `XPTY0004`, where before it returned the
   empty sequence. Backwards compatible mode is unchanged.
 
-### Index layout
-
-- **Index format change: reindex required.** The typed-value tables `0x04`/`0x05` of earlier builds of this branch
-  were replaced by `0x07` (name summaries), `0x08` (typed values in value order, per document) and `0x09` (untyped
-  nodes per name).
-  - Documents indexed with the old layout keep working, but their comparisons are evaluated without the index.
-  - Reindex to get the new layout; the old rows are removed when a document's entries are rewritten.
-  - The layout version is part of each document's typed-values fingerprint (`TYPED_VALUES_FORMAT`).
-
 ### `fn:id` and related functions
 
 - On a stale document, `fn:id` raises `EXSA0003`, even for an `xml:id` lookup.
 - When several elements have the same ID, all of them are returned. This is eXist's existing behaviour; the
   specification says the first.
-
-### Store-time cost for unconfigured collections
-
-Earlier builds of this branch did per-node work in the index's stream listener even for documents of unconfigured
-collections. That work is gone. See [Benchmarks](#benchmarks).
 
 ### Known eXist issues found along the way (not changed here)
 

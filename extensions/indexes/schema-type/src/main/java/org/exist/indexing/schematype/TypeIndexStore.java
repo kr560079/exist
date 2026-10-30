@@ -64,10 +64,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <tr><td>{@code 0x01}</td><td>docId</td><td>{@link DocMeta}</td></tr>
  *   <tr><td>{@code 0x02}</td><td>docId, nodeId</td><td>localTypeId (short), flags (bit 0 = nilled)</td></tr>
  *   <tr><td>{@code 0x03}</td><td>localTypeId, docId</td><td>node list</td></tr>
- *   <tr><td>{@code 0x04}</td><td colspan="2">legacy typed values (read only to remove them): localTypeId,
- *       {@link org.exist.storage.Indexable#serializeValue} key, docId; or collectionId, localTypeId, typed key, docId</td></tr>
- *   <tr><td>{@code 0x05}</td><td>docId, localTypeId, value key</td><td>legacy: the {@code 0x04} keys of a document
- *       (empty value, or the collectionId of the second layout)</td></tr>
+ *   <tr><td>{@code 0x04}, {@code 0x05}</td><td colspan="2">reserved, unused</td></tr>
  *   <tr><td>{@code 0x06}</td><td>docId, localTypeId</td><td>placeholder: the {@code 0x03} keys of a document, so that
  *       they are removed independently of the local type table of the document's current collection</td></tr>
  *   <tr><td>{@code 0x07}</td><td>docId, {@linkplain NameKey name}</td><td>{@linkplain Summary summary} of the nodes
@@ -85,12 +82,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <p>The typed keys of {@code 0x08} preserve the order of the values ({@link TypedKeys}), so that a comparison is a
  * range scan per document and type: a lookup reads only the entries of its documents. With the name summaries of
- * {@code 0x07} it decides, per document, whether the typed values can answer a comparison. These tables replaced the
- * typed values of {@code 0x04}/{@code 0x05}, keyed by {@link org.exist.storage.Indexable#serializeValue} (whose
- * decimal keys did not sort numerically) and by value first: documents indexed before have no typed-value types in
- * their {@link DocMeta}, comparisons over them are evaluated without the index until the collection is reindexed
- * ({@code xmldb:reindex}; the index is derived data and can always be rebuilt), and their legacy rows are removed
- * whenever their entries are.</p>
+ * {@code 0x07} it decides, per document, whether the typed values can answer a comparison.</p>
  *
  * <p>Every method takes the file's lock. Every write for a document advances that document's generation, which
  * readers use to invalidate cached annotations.</p>
@@ -101,8 +93,7 @@ final class TypeIndexStore {
     static final byte DOC_META = 0x01;
     static final byte ANNOTATION = 0x02;
     static final byte TYPE_MEMBERS = 0x03;
-    static final byte LEGACY_TYPED_VALUES = 0x04;
-    static final byte LEGACY_DOC_TYPED_KEYS = 0x05;
+    // 0x04 and 0x05 are reserved: do not reuse them for a new table
     static final byte DOC_MEMBER_KEYS = 0x06;
     static final byte NAME_SUMMARY = 0x07;
     static final byte TYPED_VALUES = 0x08;
@@ -434,7 +425,7 @@ final class TypeIndexStore {
         if (get(intKey(DOC_META, docId)) != null) {
             return true;
         }
-        for (final byte table : new byte[] {ANNOTATION, DOC_MEMBER_KEYS, NAME_SUMMARY, UNTYPED_NODES, TYPED_VALUES, LEGACY_DOC_TYPED_KEYS}) {
+        for (final byte table : new byte[] {ANNOTATION, DOC_MEMBER_KEYS, NAME_SUMMARY, UNTYPED_NODES, TYPED_VALUES}) {
             final byte[] prefix = intKey(table, docId);
             if (!keys(prefix, prefix).isEmpty()) {
                 return true;
@@ -462,7 +453,6 @@ final class TypeIndexStore {
                 remove(key);
             }
         }
-        removeLegacyTypedValues(docId);
         touched(docId);
     }
 
@@ -501,7 +491,6 @@ final class TypeIndexStore {
                 filter(key, subtreeRoot);
             }
         }
-        removeLegacyTypedValues(docId);
         touched(docId);
     }
 
@@ -535,31 +524,11 @@ final class TypeIndexStore {
     }
 
     /**
-     * Remove the typed values of a document written in a legacy layout (see the class description), found through
-     * their {@code 0x05} rows.
-     */
-    private void removeLegacyTypedValues(final int docId) throws IOException {
-        final byte[] legacy = intKey(LEGACY_DOC_TYPED_KEYS, docId);
-        for (final byte[] key : keys(legacy, legacy)) {
-            final byte[] lt = Arrays.copyOfRange(key, 5, 7);
-            final byte[] valueKey = Arrays.copyOfRange(key, 7, key.length);
-            final byte[] doc = Arrays.copyOfRange(key, 1, 5);
-            final byte[] value = get(key);
-            if (value != null && value.length == 4) {
-                remove(concat(concat(concat(new byte[] {LEGACY_TYPED_VALUES}, value), concat(lt, valueKey)), doc));
-            } else {
-                remove(concat(concat(concat(new byte[] {LEGACY_TYPED_VALUES}, lt), valueKey), doc));
-            }
-            remove(key);
-        }
-    }
-
-    /**
      * Count the rows of a document in the tables keyed by document id first, and its {@code 0x03} rows; for tests.
      */
     int rowCountByScan(final int docId) throws IOException {
         int count = memberTypeIdsByScan(docId).size();
-        for (final byte table : new byte[] {ANNOTATION, LEGACY_DOC_TYPED_KEYS, DOC_MEMBER_KEYS, NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
+        for (final byte table : new byte[] {ANNOTATION, DOC_MEMBER_KEYS, NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
             final byte[] prefix = intKey(table, docId);
             count += keys(prefix, prefix).size();
         }
@@ -578,7 +547,7 @@ final class TypeIndexStore {
             final byte[] value = get(key);
             rows.add(hex.formatHex(key) + "=" + (value == null ? "" : hex.formatHex(value)));
         }
-        for (final byte table : new byte[] {DOC_META, ANNOTATION, LEGACY_DOC_TYPED_KEYS, DOC_MEMBER_KEYS, NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
+        for (final byte table : new byte[] {DOC_META, ANNOTATION, DOC_MEMBER_KEYS, NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
             final byte[] prefix = intKey(table, docId);
             for (final byte[] key : keys(prefix, prefix)) {
                 final byte[] value = get(key);
@@ -608,22 +577,6 @@ final class TypeIndexStore {
     List<Member> untypedNodes(final int docId, final NameKey name) throws IOException {
         final byte[] data = get(concat(intKey(UNTYPED_NODES, docId), name.bytes()));
         return data == null ? List.of() : decode(data);
-    }
-
-    /** the number of rows of the legacy typed-value table ({@code 0x04}), for tests */
-    int legacyTypedValueRowCount() throws IOException {
-        final byte[] prefix = {LEGACY_TYPED_VALUES};
-        return keys(prefix, prefix).size();
-    }
-
-    /** write a row of the legacy layout, for tests of their removal */
-    void putLegacyTypedValue(final short localTypeId, final byte[] valueKey, final int docId, final NodeId id) throws IOException {
-        final byte[] lt = new byte[2];
-        ByteConversion.shortToByteH(localTypeId, lt, 0);
-        final byte[] doc = new byte[4];
-        ByteConversion.intToByteH(docId, doc, 0);
-        append(concat(concat(concat(new byte[] {LEGACY_TYPED_VALUES}, lt), valueKey), doc), encode(List.of(new Member(id, (short) 1))));
-        put(concat(concat(concat(new byte[] {LEGACY_DOC_TYPED_KEYS}, doc), lt), valueKey), EMPTY);
     }
 
     // --- node lists ---

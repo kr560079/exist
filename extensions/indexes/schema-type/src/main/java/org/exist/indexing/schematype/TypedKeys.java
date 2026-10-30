@@ -40,7 +40,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
- * The order-preserving keys of typed values in the typed-value table ({@code 0x04}) of the schema type index.
+ * The order-preserving keys of typed values in the typed-value table ({@code 0x08}) of the schema type index.
  *
  * <p>A key starts with the <em>family</em> of the value: the values of one family are ordered among themselves and
  * never compared with values of another family, whose keys therefore never overlap. Within a family the unsigned
