@@ -305,6 +305,11 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 removeAllPending = false;
                 index.store().removeDocument(document.getDocId());
             }
+            if (index.failNextWrite && (listener.kind() == SchemaTypeStreamListener.PassKind.FULL
+                    || listener.kind() == SchemaTypeStreamListener.PassKind.SEEDED)) {
+                index.failNextWrite = false;
+                throw new IOException("write failure forced by a test");
+            }
             switch (listener.kind()) {
                 case FULL, SEEDED -> writePass();
                 case REMOVE -> removeSubtrees();
@@ -313,6 +318,23 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         } catch (final IOException e) {
             LOG.error("Error writing the schema type index: {}", e.getMessage(), e);
             listener.reset();
+            markStale();
+        }
+    }
+
+    /**
+     * After a failed write the document's entries may be incomplete while its metadata still says they are current:
+     * drop the metadata, so that the document is stale and its queries raise {@code EXSA0003} until it is reindexed.
+     */
+    private void markStale() {
+        if (document == null) {
+            return;
+        }
+        try {
+            index.store().removeDocMeta(document.getDocId());
+        } catch (final IOException e) {
+            LOG.error("Could not mark document {} stale in the schema type index after a failed write: {}",
+                    document.getURI(), e.getMessage(), e);
         }
     }
 

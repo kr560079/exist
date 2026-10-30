@@ -108,6 +108,8 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     volatile long reindexRetryMillis = DEFAULT_REINDEX_RETRY_MILLIS;
     /** test seam: the next automatic reindex fails */
     volatile boolean failNextReindex;
+    /** test seam: the next write of a document's entries fails with an I/O error */
+    volatile boolean failNextWrite;
     /** test seam: scheduling the next automatic reindex fails with this error, as creating its thread can */
     volatile @Nullable Error failNextSchedule;
 

@@ -220,6 +220,15 @@ final class TypeIndexStore {
         touched(docId);
     }
 
+    /**
+     * Remove the metadata of a document, keeping its other entries: the document is then stale, and queries ask for
+     * a reindex rather than trust entries that may be incomplete.
+     */
+    void removeDocMeta(final int docId) throws IOException {
+        remove(intKey(DOC_META, docId));
+        touched(docId);
+    }
+
     // --- annotations ---
 
     void putAnnotation(final int docId, final NodeId id, final short localTypeId, final boolean nilled) throws IOException {

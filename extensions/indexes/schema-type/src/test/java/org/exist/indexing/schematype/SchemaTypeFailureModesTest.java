@@ -228,6 +228,23 @@ public class SchemaTypeFailureModesTest {
     }
 
     @Test
+    void failedWriteLeavesTheDocumentStale() throws Exception {
+        configure(XCONF_OK);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        assertTyped("/db/st/t1.xml");
+
+        index().failNextWrite = true;
+        xquery("update value doc('/db/st/t1.xml')/t:trades/t:trade[1]/t:notional/t:amount with '7'");
+        assertFalse(index().failNextWrite, "the update did not write the index");
+
+        // the entries may be incomplete: the document must not look current
+        assertNull(index().store().getDocMeta(doc("t1.xml").getDocId()));
+        assertAnnotationError("EXSA0003", "/db/st/t1.xml");
+        xquery("xmldb:reindex('/db/st')");
+        assertTyped("/db/st/t1.xml");
+    }
+
+    @Test
     void reindexOnSchemaChangeRebuildsAutomatically() throws Exception {
         configure(XCONF_AUTO);
         store(ST, "t1.xml", fixture("trade-1.xml"));
