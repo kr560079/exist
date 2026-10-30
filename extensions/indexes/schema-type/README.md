@@ -232,7 +232,7 @@ With `on-unassignable="reject"`, every operation that writes a node the schema c
 nothing of it is kept:
 
 - storing a document;
-- XQuery Update and the legacy `update` expressions (the update is rolled back);
+- the `update` expressions (`update insert`, `update replace`, ...; the update is rolled back);
 - replacing a document, including its root;
 - copying or moving a document into it;
 - **restoring a backup** into it. A restore stores documents as a client does, so it is a store like any other.
@@ -266,12 +266,16 @@ documents governed by that `<schema-type>`: the collection and the subcollection
 subcollections with a `collection.xconf` of their own. It happens in two cases:
 
 - **Storing a `collection.xconf` with a changed schema** reindexes the governed documents once the configuration is
-  committed.
+  committed. This applies to a collection whose documents were indexed with another schema. Configuring a
+  collection that holds documents for the first time does not reindex it on the store: its first query raises
+  `EXSA0003` and schedules the reindex (see the next case). Run `xmldb:reindex` yourself to avoid that.
 - **A query that meets a stale document** still raises `EXSA0003`, and also schedules an asynchronous reindex of the
   collection. The reindex is scheduled once per collection and schema version, and runs as the `collection.xconf`
   owner. It never runs inside the query, and never as the system user. Queries succeed once it has finished.
 
-An automatic reindex skips documents the owner may not read, with a WARN.
+An automatic reindex skips collections the owner may not read, with a WARN. It reindexes every document of a
+collection it can read; it does not check each document's own permissions. Nothing leaks this way: the index is
+derived data, and the paths of unassignable nodes are shown only to callers who can read the document.
 
 The index is derived data and can always be rebuilt from the documents.
 
@@ -288,8 +292,10 @@ The index is derived data and can always be rebuilt from the documents.
     type-to-nodes table, with derived types and substitution groups expanded;
   - a descendant step with a name and a **first predicate** that compares `.`, a child `M` or an attribute `@A`
     with literals, by a general comparison `=`, `<`, `<=`, `>` or `>=`. For example `//fpml:initialValue[. > 1e6]` or
-    `//t:notional[t:amount > 5e5]`. The answer comes from the typed-value table, for documents in which every node
-    with the compared name has a type listed in `<typed-values>`; the other documents are evaluated as usual.
+    `//t:notional[t:amount > 5e5]`. The answer comes from the typed-value table only if it can answer for **every**
+    document of the step: each must be configured and current, and every node with the compared name must have a
+    type listed in `<typed-values>`. If one document does not qualify (unconfigured, stale, or with an untyped or
+    unlisted compared node), the whole step is evaluated without the index, for all its documents.
 - **Evaluated without the index:**
   - `element(N, T)` with a name. It is answered from the structural index by name and then filtered by type, which is
     cheaper for selective names.
@@ -305,6 +311,20 @@ The index is derived data and can always be rebuilt from the documents.
   schema types refer to them by a type code that must stay valid. A recompile of the same version (after eviction)
   replaces them, so each version is held once. Editing a schema many times without a restart therefore keeps one
   model per edit.
+- **Single-item contexts that take the first item.** A few places that atomize still use only the first item of a
+  list-typed node without raising `XPTY0004`: the operands of a range (`to`), lookup keys (`?`), the names of
+  computed constructors, and `order by` keys that eXist precomputes from an index (`PreorderedValueSequence`).
+- **Type tests scale with the number of configured collections.** Local type ids are numbered per collection, so
+  `//element(*, T)` reads the type's node lists of every configured collection that uses the same local id, and then
+  keeps those of the queried documents.
+- **An automatic reindex blocks stores into the collection** while it runs: it holds the collections' read locks for
+  the whole governed tree, in one transaction. `xmldb:reindex` (which takes write locks) blocks them as well.
+- **A rejected copy over an existing document fires its delete triggers.** When `xmldb:copy-resource` would replace
+  a document of a reject collection, and the schema check rejects the copy, the `before`/`after` delete triggers of
+  the replaced document have already fired, although the document is kept.
+- **Query pool and XQuery triggers.** Re-checking whether a pooled query's schema is current takes database locks
+  inside the pool's cache. An XQuery trigger on a schema collection that borrows the same query could deadlock
+  there.
 - **Query-time cost:** annotation lookups are cached per query and document. The [query benchmark](#benchmarks)
   shows where the index helps and where it does not.
 
