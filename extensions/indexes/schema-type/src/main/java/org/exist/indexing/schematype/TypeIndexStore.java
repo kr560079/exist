@@ -21,6 +21,7 @@
  */
 package org.exist.indexing.schematype;
 
+import org.exist.dom.QName;
 import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.DocumentSet;
 import org.exist.dom.persistent.NewArrayNodeSet;
@@ -38,15 +39,19 @@ import org.exist.storage.io.VariableByteOutputStream;
 import org.exist.storage.lock.LockManager;
 import org.exist.storage.lock.ManagedLock;
 import org.exist.util.ByteConversion;
+import org.exist.util.FixedByteArray;
 import org.exist.util.LockException;
 import org.exist.util.ReadOnlyException;
 import org.exist.xquery.TerminatedException;
 
 import javax.annotation.Nullable;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -113,13 +118,13 @@ final class TypeIndexStore {
      * @param kind {@link org.w3c.dom.Node#ELEMENT_NODE} or {@link org.w3c.dom.Node#ATTRIBUTE_NODE}
      */
     record NameKey(short kind, String namespace, String localName) {
-        static NameKey of(final short kind, final org.exist.dom.QName name) {
+        static NameKey of(final short kind, final QName name) {
             return new NameKey(kind, name.getNamespaceURI() == null ? "" : name.getNamespaceURI(), name.getLocalPart());
         }
 
         byte[] bytes() {
-            final byte[] ns = namespace.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            final byte[] local = localName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            final byte[] ns = namespace.getBytes(StandardCharsets.UTF_8);
+            final byte[] local = localName.getBytes(StandardCharsets.UTF_8);
             final byte[] b = new byte[1 + ns.length + 1 + local.length];
             b[0] = (byte) kind;
             System.arraycopy(ns, 0, b, 1, ns.length);
@@ -549,7 +554,7 @@ final class TypeIndexStore {
      * {@code 0x03} rows; for tests that compare an incrementally maintained index with a rebuilt one.
      */
     List<String> rowsByScan(final int docId) throws IOException {
-        final java.util.HexFormat hex = java.util.HexFormat.of();
+        final HexFormat hex = HexFormat.of();
         final List<String> rows = new ArrayList<>();
         for (final short localTypeId : memberTypeIdsByScan(docId)) {
             final byte[] key = membersKey(localTypeId, docId);
@@ -569,7 +574,7 @@ final class TypeIndexStore {
 
     /** the size of the index file, for measurements */
     long fileSize() throws IOException {
-        return java.nio.file.Files.size(db.getFile());
+        return Files.size(db.getFile());
     }
 
     /** the number of typed-value rows ({@code 0x07}, {@code 0x08}, {@code 0x09}) of a document, for tests */
@@ -758,7 +763,7 @@ final class TypeIndexStore {
     private void append(final byte[] key, final byte[] value) throws IOException {
         accesses.incrementAndGet();
         try (final ManagedLock<ReentrantLock> lock = lockManager.acquireBtreeWriteLock(db.getLockName())) {
-            if (db.append(new Value(key), new org.exist.util.FixedByteArray(value)) == BFile.UNKNOWN_ADDRESS) {
+            if (db.append(new Value(key), new FixedByteArray(value)) == BFile.UNKNOWN_ADDRESS) {
                 throw new IOException("Unable to write to " + db.getFile());
             }
         } catch (final LockException | ReadOnlyException e) {

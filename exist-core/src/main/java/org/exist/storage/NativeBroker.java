@@ -38,6 +38,7 @@ import org.exist.collections.Collection.SubCollectionEntry;
 import org.exist.collections.triggers.*;
 import org.exist.indexing.Index;
 import org.exist.indexing.IndexController;
+import org.exist.indexing.ReindexScope;
 import org.exist.indexing.StreamListener;
 import org.exist.indexing.StreamListener.ReindexMode;
 import org.exist.indexing.StructuralIndex;
@@ -75,7 +76,9 @@ import org.apache.commons.io.input.UnsynchronizedByteArrayInputStream;
 import org.apache.commons.io.output.UnsynchronizedByteArrayOutputStream;
 import org.exist.util.io.InputStreamUtil;
 import org.exist.xmldb.XmldbURI;
+import org.exist.util.serializer.DOMStreamer;
 import org.exist.xquery.TerminatedException;
+import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.xquery.value.Type;
 import org.w3c.dom.Document;
 import org.w3c.dom.DocumentType;
@@ -3104,7 +3107,7 @@ public class NativeBroker implements DBBroker {
         if(sourceDocument.getResourceType() == DocumentImpl.XML_FILE) {
             if(!renameOnly) {
                 // reindexing
-                reindexXMLResource(transaction, sourceDocument, IndexMode.REPAIR, org.exist.indexing.ReindexScope.ALL, false);
+                reindexXMLResource(transaction, sourceDocument, IndexMode.REPAIR, ReindexScope.ALL, false);
             }
         }
 
@@ -3315,7 +3318,7 @@ public class NativeBroker implements DBBroker {
     }
 
     private void reindexXMLResource(final Txn transaction, final DocumentImpl doc, final IndexMode mode,
-            final org.exist.indexing.ReindexScope scope, final boolean explicit) {
+            final ReindexScope scope, final boolean explicit) {
         getIndexController().runWithReindexing(() -> {
             final StreamListener listener = getIndexController().getStreamListener(doc, ReindexMode.STORE);
             getIndexController().startIndexDocument(transaction, listener);
@@ -3345,8 +3348,8 @@ public class NativeBroker implements DBBroker {
         if (source.getResourceType() != DocumentImpl.XML_FILE) {
             return;
         }
-        final org.exist.xquery.schema.TypeAnnotationProvider provider = org.exist.xquery.schema.TypeAnnotationProvider.of(this);
-        final org.exist.xquery.schema.TypeAnnotationProvider.StoreCheck check = provider == null ? null : provider.storeCheck(target, name);
+        final TypeAnnotationProvider provider = TypeAnnotationProvider.of(this);
+        final TypeAnnotationProvider.StoreCheck check = provider == null ? null : provider.storeCheck(target, name);
         if (check == null) {
             return;
         }
@@ -3355,7 +3358,7 @@ public class NativeBroker implements DBBroker {
             throw new PermissionDeniedException("Account '" + getCurrentSubject().getName() + "' has insufficient privileges to read '" + source.getURI() + "'.");
         }
         try {
-            new org.exist.util.serializer.DOMStreamer(check, check).serialize(source, true);
+            new DOMStreamer(check, check).serialize(source, true);
         } catch (final org.xml.sax.SAXException e) {
             throw new IOException(e.getMessage(), e);
         }

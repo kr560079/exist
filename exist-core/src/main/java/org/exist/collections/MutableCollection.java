@@ -27,6 +27,7 @@ import net.jcip.annotations.GuardedBy;
 import net.jcip.annotations.NotThreadSafe;
 import org.apache.commons.io.input.CloseShieldReader;
 import org.exist.dom.QName;
+import org.exist.dom.memtree.SAXAdapter;
 import org.exist.dom.persistent.*;
 
 import java.io.*;
@@ -62,6 +63,8 @@ import org.exist.util.XMLReaderObjectFactory;
 import org.exist.util.XMLReaderObjectFactory.VALIDATION_SETTING;
 import org.apache.commons.io.input.UnsynchronizedByteArrayInputStream;
 import org.exist.util.serializer.DOMStreamer;
+import org.exist.xquery.Expression;
+import org.exist.xquery.schema.TypeAnnotationProvider;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.Constants;
 import org.w3c.dom.DocumentType;
@@ -1435,7 +1438,7 @@ public class MutableCollection implements Collection {
                 try {
                     manager.invalidate(getURI(), broker.getBrokerPool());
                     manager.loadConfiguration(broker, this);
-                    final org.exist.xquery.schema.TypeAnnotationProvider provider = org.exist.xquery.schema.TypeAnnotationProvider.of(broker);
+                    final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
                     if (provider != null) {
                         provider.configurationStored(broker, transaction, getURI().trimFromBeginning(XmldbURI.CONFIG_COLLECTION_URI));
                     }
@@ -1604,11 +1607,11 @@ public class MutableCollection implements Collection {
 
                 final boolean isConfigDoc = getURI().startsWith(XmldbURI.CONFIG_COLLECTION_URI)
                         && name.endsWith(CollectionConfiguration.COLLECTION_CONFIG_SUFFIX_URI);
-                final org.exist.dom.memtree.SAXAdapter configTap = isConfigDoc ? new org.exist.dom.memtree.SAXAdapter((org.exist.xquery.Expression) null) : null;
+                final SAXAdapter configTap = isConfigDoc ? new SAXAdapter((Expression) null) : null;
                 // other documents: a collection with a schema type configuration checks them before anything is written
-                final org.exist.xquery.schema.TypeAnnotationProvider.StoreCheck storeCheck;
+                final TypeAnnotationProvider.StoreCheck storeCheck;
                 if (configTap == null) {
-                    final org.exist.xquery.schema.TypeAnnotationProvider provider = org.exist.xquery.schema.TypeAnnotationProvider.of(broker);
+                    final TypeAnnotationProvider provider = TypeAnnotationProvider.of(broker);
                     storeCheck = provider == null ? null : provider.storeCheck(this, name);
                 } else {
                     storeCheck = null;

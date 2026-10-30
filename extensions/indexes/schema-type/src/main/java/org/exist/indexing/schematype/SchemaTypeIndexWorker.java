@@ -40,16 +40,22 @@ import org.exist.indexing.StreamListener.ReindexMode;
 import org.exist.indexing.schematype.TypeIndexStore.Member;
 import org.exist.indexing.schematype.TypeIndexStore.StoredAnnotation;
 import org.exist.numbering.NodeId;
+import org.exist.security.Permission;
 import org.exist.security.PermissionDeniedException;
 import org.exist.security.Subject;
 import org.exist.storage.DBBroker;
 import org.exist.storage.IndexSpec;
 import org.exist.storage.NodePath;
+import org.exist.storage.lock.Lock.LockMode;
+import org.exist.storage.lock.ManagedDocumentLock;
 import org.exist.storage.txn.Txn;
+import org.exist.storage.txn.TxnListener;
 import org.exist.util.DatabaseConfigurationException;
+import org.exist.util.LockException;
 import org.exist.util.Occurrences;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.ErrorCodes;
+import org.exist.xquery.Expression;
 import org.exist.xquery.QueryRewriter;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.XQueryContext;
@@ -695,8 +701,8 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             }
             // only once the configuration is committed; if the store is aborted there is nothing to reindex
             final SchemaKey key = cfg.schema().key();
-            final org.exist.security.Subject storingUser = broker.getCurrentSubject();
-            txn.registerListener(new org.exist.storage.txn.TxnListener() {
+            final Subject storingUser = broker.getCurrentSubject();
+            txn.registerListener(new TxnListener() {
                 /*
                  * Runs inside Txn.signalCommit, before the transaction releases its locks: nothing may escape, or the
                  * locks of the configuration store are never released.
@@ -756,7 +762,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final int code = index.table(doc.getCollection().getId(), cfg.schema()).codeOf(stored.localTypeId());
             return code < 0 ? unannotated : TypeAnnotation.assessed(code, stored.nilled());
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
     }
 
@@ -827,7 +833,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 }
             }
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
         return result;
     }
@@ -885,7 +891,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 }
             }
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
         final NodeSet result = new NewArrayNodeSet();
         for (final NodeSet nodes : found) {
@@ -948,7 +954,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                 scopes.add(new TypedScope(collection, entry.getValue(), cfg, index.table(collection.getId(), cfg.schema())));
             }
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
         return scopes;
     }
@@ -992,7 +998,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         } catch (final SchemaLoadException e) {
             LOG.debug("Unable to load the schema configured on {} for import schema: {}", resolution.collections(), e.getMessage());
             // only collections the user may read are listed
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
+            throw new XPathException((Expression) null, ErrorCodes.XQST0059,
                     "Configured schema unavailable for namespace '" + namespaceUri + "' on " + resolution.collections());
         }
     }
@@ -1054,7 +1060,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             return null;
         }
         if (byKey.size() > 1) {
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.XQST0059,
+            throw new XPathException((Expression) null, ErrorCodes.XQST0059,
                     "The schema for namespace '" + namespaceUri + "' is ambiguous: collections configure different schemas for it "
                             + collectionsByKey.values());
         }
@@ -1064,8 +1070,8 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
 
     /** whether the subject may read the collection */
     private boolean readable(final XmldbURI collectionUri, final Subject subject) {
-        try (final Collection collection = broker.openCollection(collectionUri, org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
-            return collection != null && collection.getPermissionsNoLock().validate(subject, org.exist.security.Permission.READ);
+        try (final Collection collection = broker.openCollection(collectionUri, LockMode.READ_LOCK)) {
+            return collection != null && collection.getPermissionsNoLock().validate(subject, Permission.READ);
         } catch (final PermissionDeniedException e) {
             return false;
         }
@@ -1082,7 +1088,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final DocMeta meta = index.store().getDocMeta(doc.getDocId());
             return meta != null ? meta.indexedWith() : cfg.schema().key();
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
     }
 
@@ -1211,7 +1217,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
      * a caller who may read the collection.
      */
     private XPathException unavailable(final Collection collection, final String detailed) {
-        return new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0002,
+        return new XPathException((Expression) null, ErrorCodes.EXSA0002,
                 mayRead(collection) ? detailed : GENERIC_UNAVAILABLE);
     }
 
@@ -1246,16 +1252,16 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                         + (pending ? "; a reindex of the collection is pending, retry shortly"
                         : "; reindex the collection with xmldb:reindex('" + doc.getCollection().getURI() + "')");
             }
-            throw new XPathException((org.exist.xquery.Expression) null, ErrorCodes.EXSA0003, message);
+            throw new XPathException((Expression) null, ErrorCodes.EXSA0003, message);
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
     }
 
     /** whether the current subject may read the collection */
     boolean mayRead(@Nullable final Collection collection) {
         return collection != null
-                && collection.getPermissionsNoLock().validate(broker.getCurrentSubject(), org.exist.security.Permission.READ);
+                && collection.getPermissionsNoLock().validate(broker.getCurrentSubject(), Permission.READ);
     }
 
     /**
@@ -1299,7 +1305,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                     : meta.status() == DocMeta.DocStatus.PARTIAL ? "partial" : "typed";
             return new Status(state, meta.indexedWith().sha256(), meta.unassignablePaths());
         } catch (final IOException e) {
-            throw new XPathException((org.exist.xquery.Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
+            throw new XPathException((Expression) null, "Error reading the schema type index: " + e.getMessage(), e);
         }
     }
 
@@ -1333,7 +1339,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
      *     database began to shut down
      */
     int reindexGoverned(final XmldbURI collectionUri, final Txn txn) {
-        try (final Collection root = broker.openCollection(collectionUri, org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+        try (final Collection root = broker.openCollection(collectionUri, LockMode.READ_LOCK)) {
             final SchemaTypeConfig cfg = root == null ? null : configOf(root);
             if (cfg == null) {
                 return 0;
@@ -1356,7 +1362,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             for (final Iterator<XmldbURI> i = collection.collectionIterator(broker); i.hasNext(); ) {
                 children.add(collection.getURI().append(i.next()));
             }
-        } catch (final PermissionDeniedException | org.exist.util.LockException e) {
+        } catch (final PermissionDeniedException | LockException e) {
             LOG.warn("Not reindexing the documents of collection {}: {}", collection.getURI(), e.getMessage());
             return 1;
         }
@@ -1367,7 +1373,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
                     return failures + 1;
                 }
                 // a document being updated is locked for write: wait for it rather than racing it
-                try (final org.exist.storage.lock.ManagedDocumentLock ignored =
+                try (final ManagedDocumentLock ignored =
                              broker.getBrokerPool().getLockManager().acquireDocumentReadLock(doc.getURI())) {
                     reindexDocument(doc, txn);
                 } catch (final Exception e) {
@@ -1383,7 +1389,7 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             if (broker.getBrokerPool().isShuttingDownOrDown()) {
                 return failures + 1;
             }
-            try (final Collection child = broker.openCollection(childUri, org.exist.storage.lock.Lock.LockMode.READ_LOCK)) {
+            try (final Collection child = broker.openCollection(childUri, LockMode.READ_LOCK)) {
                 // a descendant with a collection.xconf of its own has its own configuration: not governed by this one
                 if (child == null) {
                     LOG.warn("Skipping collection {} in the reindex after a schema change: it was removed", childUri);

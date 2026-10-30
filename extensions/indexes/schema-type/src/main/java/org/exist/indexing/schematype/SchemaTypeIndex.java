@@ -25,6 +25,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.exist.backup.RawDataBackup;
 import org.exist.indexing.AbstractIndex;
+import org.exist.indexing.IndexFactory;
 import org.exist.indexing.IndexWorker;
 import org.exist.indexing.RawBackupSupport;
 import org.exist.security.Subject;
@@ -54,6 +55,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -69,7 +73,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     private static final Logger LOG = LogManager.getLogger(SchemaTypeIndex.class);
     private static final String DEFAULT_FILE = "schema-type.dbx";
 
-    public static final class Factory implements org.exist.indexing.IndexFactory {
+    public static final class Factory implements IndexFactory {
         @Override
         public String getDefaultId() {
             return "schema-type-index";
@@ -96,8 +100,8 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     private final Set<String> reportedUnstable = ConcurrentHashMap.newKeySet();
     /** the automatic reindex pending or last failed, per collection; updated atomically */
     private final ConcurrentHashMap<Integer, ReindexState> reindexes = new ConcurrentHashMap<>();
-    private final java.util.concurrent.atomic.AtomicInteger scheduledReindexCount = new java.util.concurrent.atomic.AtomicInteger();
-    private java.util.concurrent.ExecutorService reindexExecutor;
+    private final AtomicInteger scheduledReindexCount = new AtomicInteger();
+    private ExecutorService reindexExecutor;
     /** when a collection's schema was last looked up while it was unavailable (milliseconds), to rate-limit retries */
     private final ConcurrentHashMap<Integer, Long> lastLoadAttempt = new ConcurrentHashMap<>();
 
@@ -360,7 +364,7 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
                 }
                 synchronized (this) {
                     if (reindexExecutor == null) {
-                        reindexExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                        reindexExecutor = Executors.newSingleThreadExecutor(r -> {
                             final Thread thread = new Thread(pool.getThreadGroup(), r, "schema-type-reindex");
                             thread.setDaemon(true);
                             return thread;
