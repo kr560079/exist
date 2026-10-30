@@ -663,6 +663,40 @@ public class SchemaTypeIndexTest {
 
     // --- the invariants the store optimisations rely on ---
 
+    /** an unconfigured store writes nothing, also on a broker whose listener chain has just indexed a configured document */
+    @Test
+    void unconfiguredStoreAfterConfiguredOneWritesNothing() throws Exception {
+        store(ST, "t2.xml", T1);
+        store(PLAIN2, "t1.xml", T1);
+        final int docId = doc(PLAIN2, "t1.xml").getDocId();
+        assertEquals(java.util.List.of(), index().store().rowsByScan(docId));
+
+        // configured afterwards: stale until reindexed, then typed as if stored into the configured collection
+        store(CONF_PLAIN2, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
+        assertEquals("stale", worker().statusOf(doc(PLAIN2, "t1.xml")).status());
+        query("xmldb:reindex('/db/plain2')");
+        assertEquals("typed", worker().statusOf(doc(PLAIN2, "t1.xml")).status());
+        assertEquals(code("NonNegativeDecimal"), annotationIn("/db/plain2/t1.xml", "/t:trade/t:notional/t:amount").typeCode());
+        assertEquals(code("Swap"), annotationIn("/db/plain2/t1.xml", "/t:trade/t:swap").typeCode());
+    }
+
+    /** the one schema verification per store still rejects a store once the schema cannot be loaded */
+    @Test
+    void storeVerifiesTheSchemaEveryTime() throws Exception {
+        store(ST, "t2.xml", T1);
+        removeDocument(SCHEMAS, "trade.xsd");
+        final Exception unavailable = assertThrows(Exception.class, () -> store(ST, "t2.xml", T1));
+        assertTrue(String.valueOf(unavailable.getMessage()).contains("EXSA0002"), unavailable.toString());
+        assertThrows(Exception.class, () -> store(ST, "t3.xml", T1));
+        assertNull(broker.getCollection(ST).getDocument(broker, XmldbURI.create("t3.xml")));
+
+        // the schema is back: the next store is typed with it
+        store(SCHEMAS, "trade.xsd", fixture("trade.xsd"));
+        store(ST, "t3.xml", T1);
+        assertEquals("typed", worker().statusOf(doc(ST, "t3.xml")).status());
+        assertEquals(config().schema().key(), docMeta("t3.xml").indexedWith());
+    }
+
     /** a store that fails after its check has verified the schema leaves no "verified" behind for a later reindex */
     @Test
     void failedStoreDoesNotSkipTheVerificationOfALaterReindex() throws Exception {
@@ -707,6 +741,37 @@ public class SchemaTypeIndexTest {
         final String amounts = "doc('/db/st3/t1.xml')//t:amount[. > 50]";
         assertTrue(usesSchemaTypeIndex(amounts));
         assertEquals(unoptimized(amounts), query(amounts).getItemCount());
+    }
+
+    /** the first write pass of a document (stored, replaced, updated, reindexed) leaves the rows a rebuild would */
+    @Test
+    void incrementalPassesLeaveTheRowsOfARebuild() throws Exception {
+        final int docId = doc(ST, "t1.xml").getDocId();
+        final java.util.List<String> stored = index().store().rowsByScan(docId);
+        assertEquals(rebuiltRows(ST, docId), stored);
+
+        // a replacement keeps the document id: its first pass after the removal
+        store(ST, "t1.xml", "<t:trade xmlns:t='" + T_NS + "'><t:fra/><t:fee><t:amount>7</t:amount></t:fee><t:opaque><foo/></t:opaque></t:trade>");
+        assertEquals(docId, doc(ST, "t1.xml").getDocId());
+        final java.util.List<String> replaced = index().store().rowsByScan(docId);
+        assertEquals(rebuiltRows(ST, docId), replaced);
+
+        query("update insert <t:notional xmlns:t='" + T_NS + "'><t:amount>9</t:amount><t:currency>EUR</t:currency></t:notional> following doc('/db/st/t1.xml')/t:trade/t:fee");
+        query("update insert <bar/> into doc('/db/st/t1.xml')/t:trade/t:opaque");
+        final java.util.List<String> updated = index().store().rowsByScan(docId);
+        query("xmldb:reindex('/db/st')");
+        final java.util.List<String> reindexed = index().store().rowsByScan(docId);
+        assertEquals(rebuiltRows(ST, docId), reindexed);
+        assertEquals(reindexed, index().store().rowsByScan(docId));
+        // the update maintained the same entries, except for the summaries which may keep a superset
+        assertEquals(withoutTable(reindexed, TypeIndexStore.NAME_SUMMARY), withoutTable(updated, TypeIndexStore.NAME_SUMMARY));
+
+        // the automatic reindex, which does not remove the document's entries first
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            assertEquals(0, worker().reindexGoverned(ST, txn));
+            txn.commit();
+        }
+        assertEquals(reindexed, index().store().rowsByScan(docId));
     }
 
     /** the rows of a document once its entries are removed and its collection reindexed from scratch */
