@@ -675,9 +675,18 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
             final SchemaKey key = cfg.schema().key();
             final org.exist.security.Subject storingUser = broker.getCurrentSubject();
             txn.registerListener(new org.exist.storage.txn.TxnListener() {
+                /*
+                 * Runs inside Txn.signalCommit, before the transaction releases its locks: nothing may escape, or the
+                 * locks of the configuration store are never released.
+                 */
                 @Override
                 public void commit() {
-                    index.scheduleReindex(collection, key, storingUser);
+                    try {
+                        index.scheduleReindex(collection, key, storingUser);
+                    } catch (final Throwable t) {
+                        LOG.error("Error scheduling the reindex of collection {} after its configuration changed: {}",
+                                dataCollectionUri, t.getMessage(), t);
+                    }
                 }
 
                 @Override

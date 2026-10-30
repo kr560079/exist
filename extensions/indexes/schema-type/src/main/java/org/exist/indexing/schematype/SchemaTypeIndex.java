@@ -108,6 +108,8 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
     volatile long reindexRetryMillis = DEFAULT_REINDEX_RETRY_MILLIS;
     /** test seam: the next automatic reindex fails */
     volatile boolean failNextReindex;
+    /** test seam: scheduling the next automatic reindex fails with this error, as creating its thread can */
+    volatile @Nullable Error failNextSchedule;
 
     /** failedAt is 0 while the reindex for the key is pending, else when it failed */
     private record ReindexState(SchemaKey schema, long failedAt) {
@@ -349,6 +351,11 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             scheduledReindexCount.incrementAndGet();
             final XmldbURI uri = collection.getURI();
             try {
+                final Error forced = failNextSchedule;
+                if (forced != null) {
+                    failNextSchedule = null;
+                    throw forced;
+                }
                 synchronized (this) {
                     if (reindexExecutor == null) {
                         reindexExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
@@ -359,7 +366,10 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
                     }
                     reindexExecutor.execute(() -> reindex(collectionId, key, uri, subject));
                 }
-            } catch (final java.util.concurrent.RejectedExecutionException e) {
+            } catch (final RuntimeException | Error e) {
+                // rejected after a shutdown, or the thread could not be created (a destroyed thread group, no native
+                // threads left): the reindex failed, a later stale query schedules it again after the back-off
+                LOG.error("Could not schedule the reindex of collection {} after a schema change: {}", uri, e.getMessage(), e);
                 finishReindex(collectionId, key, true);
                 return false;
             }

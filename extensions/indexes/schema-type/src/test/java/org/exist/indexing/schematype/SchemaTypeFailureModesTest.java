@@ -51,6 +51,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -196,6 +197,34 @@ public class SchemaTypeFailureModesTest {
         awaitTyped("/db/st/t1.xml");
         assertNotEquals(before.indexedWith(), docMeta("t1.xml").indexedWith());
         assertEquals(scheduledBefore + 1, index().scheduledReindexCount());
+    }
+
+    @Test
+    void failureToScheduleTheReindexAtCommitReleasesTheLocks() throws Exception {
+        configure(XCONF_AUTO);
+        store(ST, "t1.xml", fixture("trade-1.xml"));
+        index().reindexRetryMillis = 0;
+        index().failNextSchedule = new OutOfMemoryError("unable to create native thread (forced by a test)");
+
+        modifyXsd();
+        store(CONF, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_AUTO);
+        assertNull(index().failNextSchedule, "the commit listener did not try to schedule the reindex");
+
+        // another thread can take the locks of the configuration store: they were released despite the failure
+        final ExecutorService other = Executors.newSingleThreadExecutor();
+        try {
+            other.submit(() -> {
+                try (final DBBroker b = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+                    storeWith(b, CONF, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_AUTO);
+                    storeWith(b, ST, "t2.xml", fixture("trade-1.xml"));
+                }
+                return null;
+            }).get(30, TimeUnit.SECONDS);
+        } finally {
+            other.shutdownNow();
+        }
+        // the failed scheduling counts as a failed reindex: a stale query schedules it again
+        awaitTyped("/db/st/t1.xml");
     }
 
     @Test
