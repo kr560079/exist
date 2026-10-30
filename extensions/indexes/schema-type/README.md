@@ -329,6 +329,10 @@ These follow the XQuery 3.1 specification. Queries that relied on the old, lenie
   checked.
 - `attribute(N, T?)` is a syntax error (`XPST0003`); `?` (nillable) is only allowed for `element()`.
 - `document-node(element(N))` tests now filter on the document element. Before, the element test was ignored.
+- `document-node(schema-element(N))` is now a real test, as `schema-element(N)` is. Before, the `schema-element`
+  part was parsed and ignored, so the test matched any document node. It now needs an `import schema` for `N`'s
+  namespace and raises `XPST0008` without one (or for an undeclared `N`); with one, it matches only documents whose
+  element matches `schema-element(N)`.
 - `import schema` no longer raises `XQST0009`.
   - A hint-less import compiled before a `collection.xconf` for the namespace exists fails with `XQST0059`: use an
     `at` hint, or configure the collection first.
@@ -345,6 +349,16 @@ These follow the XQuery 3.1 specification. Queries that relied on the old, lenie
   list-typed node or an array with several items now raises `XPTY0004`, where before it returned all of them; one
   declared `as xs:T` that returns a nilled element (or an empty array) raises `XPTY0004`, where before it returned the
   empty sequence. Backwards compatible mode is unchanged.
+
+### Other indexes (all collections)
+
+- Setting the value of an existing attribute through the DOM or XML:DB API (`Element.setAttribute`,
+  `setAttributeNS`, `setAttributeNode` on a stored element) now stores the new value before the indexes are told
+  about it. The index workers read the attribute back from storage, so Lucene, range, ngram and other custom
+  indexes now add entries for the **new** value. Before, they re-read and indexed the old value, so the new value
+  could not be found through them until the document was reindexed. This is a bug fix, but it changes what these
+  indexes return after such a call. The entries of the old value are still not removed (a pre-existing issue, see
+  below), so reindex to drop them.
 
 ### `fn:id` and related functions
 
