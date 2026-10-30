@@ -50,7 +50,13 @@ public final class UserTypeRegistry {
     }
 
     /**
-     * Register a type; idempotent per (schema, typeId).
+     * Register a type. The code is allocated once per (schema, typeId) and stays the same for the life of the JVM.
+     *
+     * <p>Registering a type again, which a recompile of the schema does after the schema cache evicted it, replaces
+     * the kept {@link UserDefinedType} with one built from the new compile. The registry thus keeps the definitions
+     * of the most recent compile of each schema only, and the model of an earlier compile can be collected once the
+     * schema cache and the queries using it let it go. Both models are of the same schema documents, so the facet
+     * checks the kept definitions are used for give the same results with either.</p>
      *
      * @param schema the schema defining the type
      * @param typeId {ns}local for named types, #anon:declaration-path for anonymous types
@@ -61,11 +67,13 @@ public final class UserTypeRegistry {
         final String key = schema.sha256() + '|' + typeId;
         final Integer existing = CODES.get(key);
         if (existing != null) {
+            TYPES.put(existing, factory.apply(existing));
             return existing;
         }
         synchronized (UserTypeRegistry.class) {
             final Integer again = CODES.get(key);
             if (again != null) {
+                TYPES.put(again, factory.apply(again));
                 return again;
             }
             final int code = NEXT_CODE.getAndIncrement();

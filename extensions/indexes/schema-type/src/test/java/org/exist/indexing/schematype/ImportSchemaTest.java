@@ -22,6 +22,7 @@
 package org.exist.indexing.schematype;
 
 import org.exist.collections.Collection;
+import org.exist.dom.persistent.DocumentImpl;
 import org.exist.storage.BrokerPool;
 import org.exist.storage.DBBroker;
 import org.exist.storage.txn.Txn;
@@ -200,6 +201,22 @@ public class ImportSchemaTest {
             assertEquals("2", fx.xquery(query).itemAt(0).getStringValue());
             // and again, with the other schema evicted by the import
             assertEquals("2", fx.xquery(query).itemAt(0).getStringValue());
+        }
+
+        @Test
+        void updateAfterRecompileResolvesThroughCurrentSchema() throws Exception {
+            final SchemaRegistry registry = fx.pool.getSchemaRegistry();
+            assertTrue(registry.loadedForNamespace(T_NS).isEmpty(), "the trade schema should have been evicted");
+            // storing the configuration again recompiles the evicted trade schema: a new model of the same schema
+            fx.store(CONF, "collection.xconf", xconf("xmldb:exist:///db/ist-schema/trade.xsd"));
+
+            // the parent t:trade has an anonymous type, the new child is a member of the substitution group of t:product
+            fx.xquery("declare namespace t='" + T_NS + "'; update replace doc('/db/ist/t1.xml')/t:trades/t:trade[2]/t:fra with <t:swap/>");
+            assertEquals("3", fx.xquery("import schema namespace t='" + T_NS + "'; count(doc('/db/ist/t1.xml')//element(*, t:Swap))")
+                    .itemAt(0).getStringValue());
+            final SchemaTypeIndex index = (SchemaTypeIndex) fx.pool.getIndexManager().getIndexById(SchemaTypeIndex.ID);
+            final DocumentImpl doc = fx.broker.getCollection(ST).getDocument(fx.broker, XmldbURI.create("t1.xml"));
+            assertEquals(DocMeta.DocStatus.TYPED, index.store().getDocMeta(doc.getDocId()).status());
         }
     }
 

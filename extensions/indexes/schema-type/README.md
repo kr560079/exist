@@ -301,6 +301,11 @@ The index is derived data and can always be rebuilt from the documents.
     `xs:decimal` node stays `XPTY0004`.
   - Durations, and compared names with types not listed in `<typed-values>`.
 - **Backwards-compatible (XPath 1.0) mode** skips the dynamic type checks, as before.
+- **Memory of compiled schemas.** The schema registry's `cache-size` bounds the compiled schemas it keeps, but the
+  type definitions of each distinct schema version compiled since startup stay in memory until a restart: values of
+  schema types refer to them by a type code that must stay valid. A recompile of the same version (after eviction)
+  replaces them, so each version is held once. Editing a schema many times without a restart therefore keeps one
+  model per edit.
 - **Query-time cost:** annotation lookups are cached per query and document. The [query benchmark](#benchmarks)
   shows where the index helps and where it does not.
 

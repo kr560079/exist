@@ -74,6 +74,20 @@ public class UserTypeRegistryTest {
     }
 
     @Test
+    void registeringAgainKeepsTheCodeAndTheLatestDefinition() {
+        final SchemaKey key = new SchemaKey("recompiled-" + System.nanoTime());
+        final UserDefinedType[] made = new UserDefinedType[2];
+        final int first = UserTypeRegistry.register(key, "{urn:t}R", code -> made[0] = new UserDefinedType(code,
+                new QName("R", "urn:t"), null, Type.STRING, Type.STRING, Variety.ATOMIC, key, null, new int[0]));
+        // a recompile of the same schema registers its own copy of the type
+        final int second = UserTypeRegistry.register(key, "{urn:t}R", code -> made[1] = new UserDefinedType(code,
+                new QName("R", "urn:t"), null, Type.STRING, Type.STRING, Variety.ATOMIC, key, null, new int[0]));
+        assertEquals(first, second);
+        assertNotSame(made[0], made[1]);
+        assertSame(made[1], UserTypeRegistry.get(first), "the registry must not keep the first compile's definition");
+    }
+
+    @Test
     void anonymousTypeNameUsesAnonymousId() {
         final int c = UserTypeRegistry.register(K1, "#anon:/e", code -> new UserDefinedType(code, null,
                 "#anon:/e", Type.STRING, Type.STRING, Variety.ATOMIC, K1, null, new int[0]));

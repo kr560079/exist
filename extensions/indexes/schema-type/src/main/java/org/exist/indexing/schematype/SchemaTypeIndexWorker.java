@@ -361,13 +361,15 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         }
     }
 
+    /**
+     * Resolve a type code to its definition in the collection's current compiled schema. The definition must come
+     * from that schema, not from {@link UserTypeRegistry}: its definition may come from another compile of the same
+     * schema, while content models, substitution groups and anonymous type ids are looked up by the identity of the
+     * components of the current model, which is a different one once the schema was evicted and recompiled.
+     */
     private static @Nullable XSTypeDefinition definitionOf(final int code, final SchemaTypeConfig cfg) {
-        final UserDefinedType userType = UserTypeRegistry.get(code);
-        if (userType != null) {
-            return userType.definition();
-        }
-        final QName name = LocalTypeTable.typeNameOf(code);
-        return name == null ? null : cfg.schema().namedType(name).orElse(null);
+        final String typeId = LocalTypeTable.typeIdOf(code);
+        return typeId == null ? null : cfg.schema().typeById(typeId).orElse(null);
     }
 
     /** the path of a stored element, as in {@link TypeAssigner.Assignment#path()} */
