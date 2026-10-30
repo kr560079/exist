@@ -1065,25 +1065,34 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
         verifySchemaAvailable(document.getCollection(), cfg);
     }
 
-    /** what the store check of the document being stored verified (one verification per store, not two) */
-    private record StoreVerified(SchemaTypeConfig cfg, int collectionId, XmldbURI name) {
+    /**
+     * What the store check of the document being stored verified (one verification per store, not two), in the
+     * store's transaction: a store that fails after its check (a parse error, a reject, a veto) aborts it, so the
+     * record cannot stand in for the verification of any later pass.
+     */
+    private record StoreVerified(SchemaTypeConfig cfg, int collectionId, XmldbURI name, long txnId) {
     }
 
     private @Nullable StoreVerified storeVerified;
 
     /** the store check verified {@code cfg} for the document {@code name} about to be stored into the collection */
     void verifiedForStore(final Collection collection, final XmldbURI name, final SchemaTypeConfig cfg) {
-        storeVerified = new StoreVerified(cfg, collection.getId(), name);
+        final Txn txn = broker.getCurrentTransaction();
+        storeVerified = txn == null ? null : new StoreVerified(cfg, collection.getId(), name, txn.getId());
     }
 
     /**
      * @return true if the store check verified {@code cfg} for the current document a moment ago, during the same
-     * store (the record is used once)
+     * store: the same transaction, and not a reindex (the record is used once)
      */
     boolean takeVerifiedForStore(final SchemaTypeConfig cfg) {
         final StoreVerified verified = storeVerified;
         storeVerified = null;
-        return verified != null && verified.cfg() == cfg && document != null
+        if (verified == null || verified.cfg() != cfg || document == null || isExplicitReindex()) {
+            return false;
+        }
+        final Txn txn = broker.getCurrentTransaction();
+        return txn != null && txn.getId() == verified.txnId()
                 && verified.collectionId() == document.getCollection().getId()
                 && verified.name().equals(document.getFileURI());
     }
@@ -1360,6 +1369,8 @@ public class SchemaTypeIndexWorker implements IndexWorker, TypeAnnotationProvide
     }
 
     private void reindexDocument(final DocumentImpl doc, final Txn txn) throws Exception {
+        // a reindex always verifies the schema itself
+        storeVerified = null;
         setDocument(doc, ReindexMode.STORE);
         final StreamListener streamListener = getListener();
         if (streamListener == null) {

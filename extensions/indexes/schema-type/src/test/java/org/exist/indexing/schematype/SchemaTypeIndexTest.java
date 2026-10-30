@@ -663,6 +663,23 @@ public class SchemaTypeIndexTest {
 
     // --- the invariants the store optimisations rely on ---
 
+    /** a store that fails after its check has verified the schema leaves no "verified" behind for a later reindex */
+    @Test
+    void failedStoreDoesNotSkipTheVerificationOfALaterReindex() throws Exception {
+        store(CONF3, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF_ANNOTATIONS);
+        store(ST3, "t1.xml", T1);
+        // the store check verifies the schema at the start of the document; then the parse fails
+        assertThrows(Exception.class, () -> store(ST3, "t1.xml", "<t:trade xmlns:t='" + T_NS + "'><t:swap>"));
+        removeDocument(SCHEMAS, "trade.xsd");
+
+        // the reindex must find out that the schema is gone, not reuse the failed store's verification
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            assertEquals(1, worker().reindexGoverned(ST3, txn));
+            txn.commit();
+        }
+        assertEquals("unavailable", worker().statusOf(doc(ST3, "t1.xml")).status());
+    }
+
     /**
      * An update under an unannotated parent, of a document stored before its collection was configured, writes
      * name summaries and untyped node lists with no metadata or annotation; the automatic reindex must still clear
@@ -703,6 +720,14 @@ public class SchemaTypeIndexTest {
         query("xmldb:reindex('" + collection + "')");
         assertEquals(rebuilt, index().store().rowsByScan(docId));
         return rebuilt;
+    }
+
+    private void removeDocument(final XmldbURI collection, final String name) throws Exception {
+        try (final Txn txn = pool.getTransactionManager().beginTransaction();
+             final Collection col = broker.openCollection(collection, org.exist.storage.lock.Lock.LockMode.WRITE_LOCK)) {
+            col.removeResource(txn, broker, col.getDocument(broker, XmldbURI.create(name)));
+            txn.commit();
+        }
     }
 
     private static java.util.List<String> withoutTable(final java.util.List<String> rows, final byte table) {
