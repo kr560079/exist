@@ -661,6 +661,55 @@ public class SchemaTypeIndexTest {
         assertEquals(1, provider().nodesOfType(docs, code("Swap"), false, Type.ELEMENT).getLength());
     }
 
+    // --- the invariants the store optimisations rely on ---
+
+    /**
+     * An update under an unannotated parent, of a document stored before its collection was configured, writes
+     * name summaries and untyped node lists with no metadata or annotation; the automatic reindex must still clear
+     * them.
+     */
+    @Test
+    void reindexClearsTheRowsOfAnUpdateBeforeAnyFullPass() throws Exception {
+        store(ST3, "t1.xml", T1);
+        store(CONF3, CollectionConfiguration.DEFAULT_COLLECTION_CONFIG_FILE, XCONF);
+        final int docId = doc(ST3, "t1.xml").getDocId();
+        // the reindex root is t:notional, below the root: a seeded pass
+        query("update value doc('/db/st3/t1.xml')/t:trade/t:notional/t:amount with '5'");
+        assertNull(index().store().getDocMeta(docId));
+        assertTrue(index().store().typedValueRowCountByScan(docId) > 0, "the update writes summaries");
+
+        try (final Txn txn = pool.getTransactionManager().beginTransaction()) {
+            assertEquals(0, worker().reindexGoverned(ST3, txn));
+            txn.commit();
+        }
+        assertEquals("typed", worker().statusOf(doc(ST3, "t1.xml")).status());
+        final java.util.List<String> afterReindex = index().store().rowsByScan(docId);
+        assertEquals(rebuiltRows(ST3, docId), afterReindex);
+        // answered from the index again, and the same as without it
+        assertEquals(code("NonNegativeDecimal"), annotationIn("/db/st3/t1.xml", "/t:trade/t:notional/t:amount").typeCode());
+        final String amounts = "doc('/db/st3/t1.xml')//t:amount[. > 50]";
+        assertTrue(usesSchemaTypeIndex(amounts));
+        assertEquals(unoptimized(amounts), query(amounts).getItemCount());
+    }
+
+    /** the rows of a document once its entries are removed and its collection reindexed from scratch */
+    private java.util.List<String> rebuiltRows(final XmldbURI collection, final int docId) throws Exception {
+        index().store().removeDocument(docId);
+        query("xmldb:reindex('" + collection + "')");
+        final java.util.List<String> rebuilt = index().store().rowsByScan(docId);
+        assertFalse(rebuilt.isEmpty());
+        // the rebuild itself is deterministic: a second one gives the same rows
+        index().store().removeDocument(docId);
+        query("xmldb:reindex('" + collection + "')");
+        assertEquals(rebuilt, index().store().rowsByScan(docId));
+        return rebuilt;
+    }
+
+    private static java.util.List<String> withoutTable(final java.util.List<String> rows, final byte table) {
+        final String prefix = java.util.HexFormat.of().formatHex(new byte[] {table});
+        return rows.stream().filter(row -> !row.startsWith(prefix)).toList();
+    }
+
     // --- helpers ---
 
     private SchemaTypeIndexWorker worker() {

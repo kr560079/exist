@@ -424,16 +424,23 @@ final class TypeIndexStore {
     }
 
     /**
-     * Whether a document may have entries to remove before a full pass writes it: its metadata or an annotation
-     * exists. A pass writes its annotations before the rest and the metadata last, so a document stored for the
-     * first time (or whose entries were removed with it) has neither, and needs no clearing.
+     * Whether a document may have entries to remove before a full pass writes it: its metadata exists, or a row of
+     * one of the tables keyed by document id first. A document stored for the first time, or whose entries were
+     * removed with it, has none, and needs no clearing. Every table is probed: an update under an unannotated parent
+     * (of a document stored before its collection was configured) writes name summaries and untyped node lists with
+     * neither metadata nor annotations. A {@code 0x03} member row always has its {@code 0x06} key.
      */
     boolean mayHaveEntries(final int docId) throws IOException {
         if (get(intKey(DOC_META, docId)) != null) {
             return true;
         }
-        final byte[] annotations = intKey(ANNOTATION, docId);
-        return !keys(annotations, annotations).isEmpty();
+        for (final byte table : new byte[] {ANNOTATION, DOC_MEMBER_KEYS, NAME_SUMMARY, UNTYPED_NODES, TYPED_VALUES, LEGACY_DOC_TYPED_KEYS}) {
+            final byte[] prefix = intKey(table, docId);
+            if (!keys(prefix, prefix).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -557,6 +564,29 @@ final class TypeIndexStore {
             count += keys(prefix, prefix).size();
         }
         return count;
+    }
+
+    /**
+     * Every row of a document, as {@code key=value} in hex, sorted: the tables keyed by document id first and its
+     * {@code 0x03} rows; for tests that compare an incrementally maintained index with a rebuilt one.
+     */
+    List<String> rowsByScan(final int docId) throws IOException {
+        final java.util.HexFormat hex = java.util.HexFormat.of();
+        final List<String> rows = new ArrayList<>();
+        for (final short localTypeId : memberTypeIdsByScan(docId)) {
+            final byte[] key = membersKey(localTypeId, docId);
+            final byte[] value = get(key);
+            rows.add(hex.formatHex(key) + "=" + (value == null ? "" : hex.formatHex(value)));
+        }
+        for (final byte table : new byte[] {DOC_META, ANNOTATION, LEGACY_DOC_TYPED_KEYS, DOC_MEMBER_KEYS, NAME_SUMMARY, TYPED_VALUES, UNTYPED_NODES}) {
+            final byte[] prefix = intKey(table, docId);
+            for (final byte[] key : keys(prefix, prefix)) {
+                final byte[] value = get(key);
+                rows.add(hex.formatHex(key) + "=" + (value == null ? "" : hex.formatHex(value)));
+            }
+        }
+        rows.sort(null);
+        return rows;
     }
 
     /** the size of the index file, for measurements */
