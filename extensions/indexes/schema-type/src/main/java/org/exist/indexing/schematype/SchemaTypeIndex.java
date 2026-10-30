@@ -164,7 +164,10 @@ public class SchemaTypeIndex extends AbstractIndex implements RawBackupSupport {
             try (final ManagedLock<ReentrantLock> lock = pool.getLockManager().acquireBtreeWriteLock(db.getLockName())) {
                 db.flush();
             } catch (final LockException e) {
-                throw new DBException("Failed to lock the schema type index for sync: " + e.getMessage());
+                // DBException has no constructor taking a cause
+                final DBException failure = new DBException("Failed to lock the schema type index for sync: " + e.getMessage());
+                failure.initCause(e);
+                throw failure;
             }
         }
     }
