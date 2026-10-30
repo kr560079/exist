@@ -77,6 +77,11 @@ declare %test:assertError("XPTY0004") function a:list-order-by() { for $t in $a:
 declare %test:assertError("XPTY0004") function a:list-group-by() { for $t in $a:doc//t:trade group by $d := $t/t:fixingDates return 1 };
 declare %test:assertError("XPTY0004") function a:list-switch() { switch ($a:doc//t:fixingDates) case xs:date('2026-01-01') return 1 default return 0 };
 declare %test:assertError("XPTY0004") function a:list-cast() { $a:doc//t:fixingDates cast as xs:date };
+declare %test:assertError("XPTY0004") function a:list-arithmetic() { $a:doc//t:fixingDates - xs:date('2026-01-01') };
+declare %test:assertError("XPTY0004") function a:list-single-item-argument() { year-from-date($a:doc//t:fixingDates) };
+declare %test:assertError("XPTY0004") function a:nilled-exactly-one-argument() { QName('', $a:doc//t:tradeId) };
+declare %test:assertEquals(0) function a:nilled-optional-argument() { string-length($a:doc//t:tradeId) };
+declare %test:assertEquals(2026) function a:typed-single-item-argument() { year-from-date($a:doc//t:tradeDate) };
 declare %test:assertEquals(1) function a:list-general-compare-predicate() { count($a:doc//t:trade[t:fixingDates = xs:date('2026-02-01')]) };
 declare %test:assertEquals(0) function a:list-general-compare-predicate-no-match() { count($a:doc//t:trade[t:fixingDates = xs:date('2026-03-01')]) };
 declare %test:assertEquals(4) function a:list-sum() { sum($a:doc2//t:rates) };

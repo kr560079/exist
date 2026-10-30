@@ -408,6 +408,21 @@ public abstract class Function extends PathExpr {
         return Tuple(argument, returnType);
     }
 
+    /**
+     * Atomize an argument. Atomizing can give more items than the argument has: a node with a list type (and an
+     * array) gives a sequence. The argument's cardinality was checked before atomizing, so a parameter that takes at
+     * most one item checks it again on the atomized value, as {@code XPTY0004} requires. Not in backwards compatible
+     * mode, where XPath 1.0 takes the first item.
+     */
+    private Expression atomizeArgument(final Expression argument, final SequenceType argType, final int argPosition) {
+        final Expression atomized = new Atomize(context, argument);
+        if (!argType.getCardinality().atMostOne()) {
+            return atomized;
+        }
+        return new DynamicCardinalityCheck(context, argType.getCardinality(), atomized,
+                new Error(Error.FUNC_PARAM_CARDINALITY, argPosition, mySignature));
+    }
+
     protected Tuple2<Expression, Integer> strictCheckArgumentType(
             Expression argument,
             @Nullable final SequenceType argType,
@@ -421,7 +436,7 @@ public abstract class Function extends PathExpr {
 
             if (!Type.subTypeOf(returnType, Type.ANY_ATOMIC_TYPE)) {
                 // Atomization!
-                argument = new Atomize(context, argument);
+                argument = atomizeArgument(argument, argType, argPosition);
             }
             argument = new UntypedValueCheck(context, argType.getPrimaryType(),
                     argument, new Error(Error.FUNC_PARAM_TYPE, String.valueOf(argPosition), mySignature));
