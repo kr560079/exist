@@ -7,8 +7,7 @@ dates compare as `xs:date`. Type tests also work: `element(*, T)`, `attribute(N,
 `schema-attribute(N)`.
 
 The index assigns types without validating the whole document. A node's type follows from its parent's type, its
-name and any `xsi:type` attribute, so one top-down pass is enough. The design is in
-[`docs/superpowers/specs/2026-10-28-schema-aware-xquery-design.md`](../../../docs/superpowers/specs/2026-10-28-schema-aware-xquery-design.md).
+name and any `xsi:type` attribute, so one top-down pass is enough.
 
 Collections without `<schema-type>` behave as before: their nodes atomize to `xs:untypedAtomic`.
 
