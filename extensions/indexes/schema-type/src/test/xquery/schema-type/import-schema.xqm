@@ -214,6 +214,19 @@ declare %test:assertError("XQST0057") function i:prefix-empty-ns() {
     util:eval('import schema namespace e=""; 1')
 };
 
+(: a reserved binding is an error whether or not a schema can be found for the namespace :)
+declare %test:assertError("XQST0070") function i:prefix-xml() {
+    util:eval('import schema namespace xml="urn:example:no-such-schema"; 1')
+};
+
+declare %test:assertError("XQST0070") function i:prefix-xmlns() {
+    util:eval('import schema namespace xmlns="urn:example:no-such-schema"; 1')
+};
+
+declare %test:assertError("XQST0070") function i:xml-namespace-other-prefix() {
+    util:eval('import schema namespace x="http://www.w3.org/XML/1998/namespace"; 1')
+};
+
 declare %test:assertError("XPST0008") function i:undeclared-type() {
     util:eval('import schema namespace t="urn:example:trade"; 1 instance of t:Nope')
 };

@@ -916,8 +916,12 @@ public class XQueryContext implements BinaryValueManager, Context {
         return expressionCounter;
     }
 
-    @Override
-    public void declareNamespace(final String prefix, final String uri) throws XPathException {
+    /**
+     * Check that a prefix may be bound to a namespace.
+     *
+     * @throws XPathException {@code XQST0070} if the prefix or the namespace is reserved
+     */
+    private void checkNamespaceBinding(@Nullable final String prefix, @Nullable final String uri) throws XPathException {
         if (XML_NS_PREFIX.equals(prefix) || XMLNS_ATTRIBUTE.equals(prefix)) {
             throw new XPathException(rootExpression, ErrorCodes.XQST0070,
                     "Namespace predefined prefix '" + prefix + "' can not be bound");
@@ -927,6 +931,11 @@ public class XQueryContext implements BinaryValueManager, Context {
             throw new XPathException(rootExpression, ErrorCodes.XQST0070,
                     "Namespace URI '" + uri + "' must be bound to the 'xml' prefix");
         }
+    }
+
+    @Override
+    public void declareNamespace(final String prefix, final String uri) throws XPathException {
+        checkNamespaceBinding(prefix, uri);
 
         final String nonNullPrefix = prefix == null ? "" : prefix;
         final String nonNullUri = uri == null ? "" : uri;
@@ -2574,8 +2583,8 @@ public class XQueryContext implements BinaryValueManager, Context {
      * @param locationHints the location hints, or null
      * @param defaultElementNamespace true if the namespace becomes the default element namespace
      * @return the imported schema
-     * @throws XPathException {@code XQST0057} if a prefix is bound to the empty namespace, {@code XQST0058} if the
-     *     namespace was imported before, {@code XQST0059} if no schema for the namespace can be loaded
+     * @throws XPathException {@code XQST0057} if a prefix is bound to the empty namespace, {@code XQST0070} if the
+     *     prefix or namespace is reserved, {@code XQST0058} if the namespace was imported before, {@code XQST0059} if no schema for the namespace can be loaded
      */
     public ImportedSchema importSchema(@Nullable final String prefix, final String namespaceUri,
             @Nullable final String[] locationHints, final boolean defaultElementNamespace) throws XPathException {
@@ -2584,6 +2593,8 @@ public class XQueryContext implements BinaryValueManager, Context {
             throw new XPathException(rootExpression, ErrorCodes.XQST0057,
                     "import schema binds the prefix '" + prefix + "' to the zero-length namespace");
         }
+        // before loading: an invalid binding is an error whatever the schema, and must not cause a schema to be fetched
+        checkNamespaceBinding(prefix, ns);
         if (inScopeSchemas.schemaFor(ns).isPresent()) {
             throw new XPathException(rootExpression, ErrorCodes.XQST0058,
                     "More than one import schema for the target namespace '" + ns + "'");
