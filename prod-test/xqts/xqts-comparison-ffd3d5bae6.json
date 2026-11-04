@@ -1,0 +1,348 @@
+{
+"HEAD": {
+"reg": [
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"Constr-cont-constrmod-10"
+],
+[
+"failure",
+"assert-true: actual='false'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"Constr-cont-constrmod-9"
+],
+[
+"failure",
+"assert-true: actual='false'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"combined-errors-2"
+],
+[
+"failure",
+"Expected: 'AnyOf(List(AssertStringValue(ABC,false), Error(XQST0009)))', but query returned an error: QueryError(XQST0059,err:XQST0059 Unable to load a schema for the target namespace 'http://www.w3.org/XQueryTest': catalog: no schema for namespace http://www.w3.org/XQueryTest in the catalog [at line"
+]
+]
+],
+"imp": [
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-Axes-84"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 org.exist.xquery.XPathException: err:XPST0003 unexpected token: ( [at line 2, column 33]\n [at line 33, column 2])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-37"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-element' is a reserved function name and cannot be used as a function call [at line 1, column 1])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-38"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-attribute' is a reserved function name and cannot be used as a function call [at line 1, column 1])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-39"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-element' is a reserved function name and cannot be used as a function call [at line 2, column 50])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-40"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-attribute' is a reserved function name and cannot be used as a function call [at line 2, column 50])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-67"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned: '<e foo=\"asd\"/>'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-68"
+],
+[
+"failure",
+"anyOf: expected='List(AssertXml(Left(<e/>),false,false), Error(XPST0005))', actual='<e foo=\"1\"/>', results=('assert-xml: differences='Expected number of attributes '0' but was '1' - comparing <e...> at /e[1] to <e...> at /e[1]', 'error: expected='XPST0005', but no error was raised')"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-73"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned: '<e/>'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-19"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 1, column 1, source: String/8024268974519255544])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-20"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 4, column 10, source: String/7243294880119108358])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-22"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 1, column 1, source: String/6793032184926814330])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-25"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 1, column 1, source: String/9060103766586769466])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"XQST0057"
+],
+[
+"failure",
+"Expected: 'Error(XQST0057)', but query returned an error: QueryError(XQST0009,err:XQST0009 The eXist-db XQuery implementation does not support the Schema Import Feature. [at line 1, column 1])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"XQST0070_1"
+],
+[
+"failure",
+"Expected: 'Error(XQST0070)', but query returned an error: QueryError(XQST0009,err:XQST0009 The eXist-db XQuery implementation does not support the Schema Import Feature. [at line 1, column 1])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"numberformat122"
+],
+[
+"error",
+"java.lang.StackOverflowError"
+]
+]
+],
+"onlyb": [],
+"onlya": []
+},
+"QT4": {
+"reg": [
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"Constr-cont-constrmod-10"
+],
+[
+"failure",
+"assert-true: actual='false'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"Constr-cont-constrmod-9"
+],
+[
+"failure",
+"assert-true: actual='false'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"combined-errors-2"
+],
+[
+"failure",
+"Expected: 'AnyOf(List(AssertStringValue(ABC,false), Error(XQST0009)))', but query returned an error: QueryError(XQST0059,err:XQST0059 Unable to load a schema for the target namespace 'http://www.w3.org/XQueryTest': catalog: no schema for namespace http://www.w3.org/XQueryTest in the catalog [at line"
+]
+]
+],
+"imp": [
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-Axes-84"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 org.exist.xquery.XPathException: err:XPST0003 unexpected token: ( [at line 2, column 33]\n [at line 33, column 2])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-37"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-element' is a reserved function name and cannot be used as a function call [at line 1, column 1])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-38"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-attribute' is a reserved function name and cannot be used as a function call [at line 1, column 1])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-39"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-element' is a reserved function name and cannot be used as a function call [at line 2, column 50])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-40"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPST0003,err:XPST0003 'schema-attribute' is a reserved function name and cannot be used as a function call [at line 2, column 50])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-67"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned: '<e foo=\"asd\"/>'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-68"
+],
+[
+"failure",
+"anyOf: expected='List(AssertXml(Left(<e/>),false,false), Error(XPST0005))', actual='<e foo=\"1\"/>', results=('assert-xml: differences='Expected number of attributes '0' but was '1' - comparing <e...> at /e[1] to <e...> at /e[1]', 'error: expected='XPST0005', but no error was raised')"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NameTest-73"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned: '<e/>'"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-19"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 1, column 1, source: String/8024268974519255544])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-20"
+],
+[
+"failure",
+"Expected: 'Error(XPST0008)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 4, column 10, source: String/7243294880119108358])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-22"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 1, column 1, source: String/6793032184926814330])"
+]
+],
+[
+[
+"org.exist.xqts.runner.JUnitResultsSerializerActor$XQTSJUnitTest",
+"K2-NodeTest-25"
+],
+[
+"failure",
+"Expected: 'Error(XPST0081)', but query returned an error: QueryError(XPDY0002,err:XPDY0002 Undefined context sequence for 'child::document-node()' [at line 1, column 1, source: String/9060103766586769466])"
+]
+]
+],
+"onlyb": [],
+"onlya": []
+}
+}
