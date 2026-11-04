@@ -23,6 +23,7 @@ package org.exist.indexing.schematype;
 
 import org.exist.dom.QName;
 import org.exist.xquery.schema.CompiledSchema;
+import org.exist.xquery.schema.TypeAnnotations;
 import org.exist.xquery.value.Type;
 import org.exist.xquery.value.UserDefinedType;
 import org.exist.xquery.value.UserTypeRegistry;
@@ -113,7 +114,7 @@ final class LocalTypeTable {
 
     private static boolean subTypeOf(final int code, final int typeCode) {
         try {
-            return Type.subTypeOf(code, typeCode);
+            return TypeAnnotations.derivesFrom(code, typeCode);
         } catch (final IllegalArgumentException e) {
             return false;
         }

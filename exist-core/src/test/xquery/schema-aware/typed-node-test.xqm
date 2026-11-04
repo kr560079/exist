@@ -48,6 +48,13 @@ declare %test:assertFalse function tnt:named-wrong-name() { <a>1</a> instance of
 declare %test:assertFalse function tnt:named-wrong-type() { <a>1</a> instance of element(a, xs:integer) };
 declare %test:assertTrue function tnt:attr-instance-of() { <r x="1"/>/@x instance of attribute(x, xs:untypedAtomic) };
 declare %test:assertFalse function tnt:attr-not-integer() { <r x="1"/>/@x instance of attribute(*, xs:integer) };
+(: xs:untypedAtomic derives from xs:anyAtomicType, xs:anySimpleType and xs:anyType :)
+declare %test:assertTrue function tnt:attr-anyAtomicType() { <r x="1"/>/@x instance of attribute(*, xs:anyAtomicType) };
+declare %test:assertTrue function tnt:attr-anySimpleType() { <r x="1"/>/@x instance of attribute(x, xs:anySimpleType) };
+declare %test:assertTrue function tnt:attr-anyType() { <r x="1"/>/@x instance of attribute(*, xs:anyType) };
+declare %test:assertEquals(1) function tnt:attr-step-anySimpleType() { count(<r x="1"/>/attribute(x, xs:anySimpleType)) };
+declare %test:assertEquals("1") function tnt:attr-binding-anySimpleType() { for $a as attribute(x, xs:anySimpleType) in <r x="1"/>/@x return string($a) };
+declare %test:assertFalse function tnt:untyped-is-not-anySimpleType() { <a>1</a> instance of element(*, xs:anySimpleType) };
 declare %test:assertEquals(2) function tnt:step-anyType() { count(<r><a/><b/></r>/element(*, xs:anyType)) };
 declare %test:assertEquals(0) function tnt:step-integer() { count(<r><a/><b/></r>/element(*, xs:integer)) };
 declare %test:assertEquals(1) function tnt:step-named-untyped() { count(<r><a/><b/></r>/element(a, xs:untyped)) };
@@ -59,6 +66,7 @@ declare %test:assertEquals(2) function tnt:persistent-step-anyType() { count(doc
 declare %test:assertEquals(0) function tnt:persistent-step-integer() { count(doc($tnt:COLLECTION || "/test.xml")/r/element(*, xs:integer)) };
 declare %test:assertEquals(1) function tnt:persistent-step-named() { count(doc($tnt:COLLECTION || "/test.xml")/r/element(a, xs:untyped)) };
 declare %test:assertEquals(1) function tnt:persistent-attr() { count(doc($tnt:COLLECTION || "/test.xml")/r/attribute(x, xs:untypedAtomic)) };
+declare %test:assertEquals(1) function tnt:persistent-attr-anySimpleType() { count(doc($tnt:COLLECTION || "/test.xml")/r/attribute(x, xs:anySimpleType)) };
 declare %test:assertEquals(0) function tnt:persistent-attr-integer() { count(doc($tnt:COLLECTION || "/test.xml")/r/attribute(x, xs:integer)) };
 declare %test:assertFalse function tnt:persistent-instance-of() { doc($tnt:COLLECTION || "/test.xml")/r/a instance of element(*, xs:integer) };
 declare %test:assertTrue function tnt:persistent-instance-of-untyped() { doc($tnt:COLLECTION || "/test.xml")/r/a instance of element(a, xs:untyped) };

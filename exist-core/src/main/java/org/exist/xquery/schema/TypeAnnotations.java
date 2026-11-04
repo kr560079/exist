@@ -230,7 +230,22 @@ public final class TypeAnnotations {
         if (annotation.nilled() && !nillable) {
             return false;
         }
-        return Type.subTypeOf(annotation.typeCode(), typeCode);
+        return derivesFrom(annotation.typeCode(), typeCode);
+    }
+
+    /**
+     * Whether a type annotation derives from a type. {@link Type#subTypeOf(int, int)} alone does not answer this: it
+     * places {@code xs:anyAtomicType} below {@code item()}, so no atomic type counts as derived from
+     * {@code xs:anySimpleType}.
+     *
+     * @param annotation the {@link Type} code of the annotation
+     * @param typeCode   the {@link Type} code to test against
+     * @return true if the annotation is the type or is derived from it
+     */
+    public static boolean derivesFrom(final int annotation, final int typeCode) {
+        return Type.subTypeOf(annotation, typeCode)
+                || ((typeCode == Type.ANY_SIMPLE_TYPE || typeCode == Type.ANY_TYPE)
+                        && Type.subTypeOf(annotation, Type.ANY_ATOMIC_TYPE));
     }
 
     private static TypeAnnotation unannotated(final int kind) {

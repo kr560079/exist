@@ -159,7 +159,7 @@ public class TypedNodeTest extends TypeTest {
         }
         // no annotation is stored in any other stream: the node is unannotated
         return !requiresAnnotation()
-                && Type.subTypeOf(nodeType == Type.ATTRIBUTE ? Type.UNTYPED_ATOMIC : Type.UNTYPED, typeCode);
+                && TypeAnnotations.derivesFrom(nodeType == Type.ATTRIBUTE ? Type.UNTYPED_ATOMIC : Type.UNTYPED, typeCode);
     }
 
     /** @return the name of the test, or null for a test of any name and for a document node test */

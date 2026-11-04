@@ -30,6 +30,7 @@ import org.exist.xquery.QueryRewriter;
 import org.exist.xquery.TypedNodeTest;
 import org.exist.xquery.XQueryContext;
 import org.exist.xquery.schema.TypeAnnotationProvider;
+import org.exist.xquery.schema.TypeAnnotations;
 import org.exist.xquery.value.Type;
 
 import javax.annotation.Nullable;
@@ -112,7 +113,7 @@ public class SchemaTypeQueryRewriter extends QueryRewriter {
         }
         final int unannotated = kind == Type.ELEMENT ? Type.ANY_TYPE : Type.UNTYPED_ATOMIC;
         try {
-            return Type.subTypeOf(unannotated, code);
+            return TypeAnnotations.derivesFrom(unannotated, code);
         } catch (final IllegalArgumentException e) {
             return true;
         }

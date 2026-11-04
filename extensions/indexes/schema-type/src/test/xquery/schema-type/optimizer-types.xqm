@@ -118,6 +118,10 @@ declare %test:assertTrue function o:element-star-builtin-base() { o:same($o:C ||
 declare %test:assertTrue function o:element-star-user-simple() { o:same($o:C || '//element(*, t:NonNegativeDecimal)') };
 declare %test:assertTrue function o:element-star-not-nillable() { o:same($o:C || '//element(*, xs:string)') };
 declare %test:assertTrue function o:element-star-nillable() { o:same($o:C || '//element(*, xs:string?)') };
+(: a stored xs:decimal or xs:date derives from xs:anySimpleType and xs:anyType, through xs:anyAtomicType :)
+declare %test:assertTrue function o:element-star-any-simple() { o:same($o:C || '//element(*, xs:anySimpleType)') };
+declare %test:assertTrue function o:element-star-any-simple-found() { o:eval('exists(' || $o:C || '//element(*, xs:anySimpleType))') };
+declare %test:assertTrue function o:typed-atomic-element-any-simple() { o:eval('exists(' || $o:C || '//t:tradeDate[. instance of element(*, xs:anySimpleType)])') };
 declare %test:assertTrue function o:element-star-untyped() { o:same($o:C || '//element(*, xs:untyped)') };
 declare %test:assertTrue function o:schema-element() { o:same($o:C || '//schema-element(t:product)') };
 declare %test:assertTrue function o:schema-element-member() { o:same($o:C || '//schema-element(t:swap)') };
