@@ -41,7 +41,9 @@ import org.exist.collections.triggers.TriggerException;
 import org.exist.dom.QName;
 import org.exist.dom.persistent.DefaultDocumentSet;
 import org.exist.dom.persistent.DocumentSet;
+import org.exist.dom.persistent.ElementImpl;
 import org.exist.dom.persistent.MutableDocumentSet;
+import org.exist.dom.persistent.NodeProxy;
 import org.exist.indexing.OrderedValuesIndex;
 import org.exist.indexing.QNamedKeysIndex;
 import org.exist.security.PermissionDeniedException;
@@ -1271,6 +1273,27 @@ public class LuceneIndexTest {
 
             transact.commit(transaction);
          }
+    }
+
+    /**
+     * Setting an existing attribute through the DOM must index the new value: the index worker reads the attribute
+     * back from storage, so the value has to be stored first.
+     */
+    @org.junit.jupiter.api.Test
+    public void setAttributeIndexesTheNewValue() throws EXistException, CollectionConfigurationException, PermissionDeniedException, SAXException, LockException, IOException, XPathException {
+        configureAndStore(COLLECTION_CONFIG1, XML1, "setAttribute.xml");
+        final BrokerPool pool = existEmbeddedServer.getBrokerPool();
+        try (final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()))) {
+            final XQuery xquery = pool.getXQueryService();
+            final String doc = "doc('" + TestConstants.TEST_COLLECTION_URI + "/setAttribute.xml')";
+
+            final Sequence paragraph = xquery.execute(broker, doc + "/section/p[@rend = 'center']", null);
+            assertEquals(1, paragraph.getItemCount());
+            ((ElementImpl) ((NodeProxy) paragraph.itemAt(0)).getNode()).setAttribute("rend", "middle");
+
+            final Sequence found = xquery.execute(broker, doc + "/section[ft:query(p/@rend, 'middle')]", null);
+            assertEquals(1, found.getItemCount());
+        }
     }
 
     private DocumentSet configureAndStore(final String configuration, final String data, final String docName) throws EXistException, CollectionConfigurationException, PermissionDeniedException, SAXException, TriggerException, LockException, IOException {
