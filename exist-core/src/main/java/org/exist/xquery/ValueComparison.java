@@ -114,7 +114,7 @@ public class ValueComparison extends GeneralComparison {
             final AtomicValue rv = rs.itemAt(0).atomize();
             for (final NodeProxy current : nodes) {
                 final AtomicValue lv = current.atomize();
-                if (compareAtomic(collator, lv, rv, StringTruncationOperator.NONE, Comparison.EQ)) {
+                if (compareAtomic(collator, lv, rv, StringTruncationOperator.NONE, relation)) {
                     result.add(current);
                 }
             }
